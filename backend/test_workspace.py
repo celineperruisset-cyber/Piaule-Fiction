@@ -150,6 +150,95 @@ def test_verification_policy_and_external_proof_are_consent_gated():
         assert document["statut"] == "valide"
 
 
+def test_visit_slots_are_reserved_and_candidate_can_confirm_once_complete():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        owner = TestClient(main.app)
+        assert owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "visit-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        ).status_code == 200
+        property_response = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien visites",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue des rendez-vous",
+                "ville": "Chambéry",
+            },
+        )
+        property_id = property_response.json()["id"]
+        application = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Demo",
+                "candidat_email": "alex-visit@example.test",
+                "source": "email",
+            },
+        )
+        application_id = application.json()["id"]
+
+        for document_type in ("identite", "domicile", "situation_professionnelle", "ressources", "imposition"):
+            uploaded = owner.post(
+                f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
+                data={"nom": f"Pièce {document_type}", "type": document_type},
+                files={"file": (f"{document_type}.pdf", b"%PDF-1.4 demo", "application/pdf")},
+            )
+            assert uploaded.status_code == 201
+            document_id = uploaded.json()["id"]
+            verified = owner.put(
+                f"/api/biens/{property_id}/candidatures/{application_id}/pieces/{document_id}/verification",
+                json={"statut": "valide", "note_verification": "Revue humaine de test"},
+            )
+            assert verified.status_code == 200
+
+        slot = owner.post(
+            f"/api/biens/{property_id}/visite-creneaux",
+            json={
+                "debut": "2027-01-10T10:00:00+01:00",
+                "fin": "2027-01-10T10:30:00+01:00",
+                "mode": "sur_place",
+            },
+        )
+        assert slot.status_code == 201
+        slot_id = slot.json()["id"]
+        proposed = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/visites/proposer",
+            json={"slot_id": slot_id, "note": "Créneau proposé par l'agent."},
+        )
+        assert proposed.status_code == 201
+        visit_id = proposed.json()["id"]
+        assert proposed.json()["statut"] == "proposee"
+
+        link = owner.post(f"/api/biens/{property_id}/candidatures/{application_id}/lien-candidat")
+        token = link.json()["url"].split("?access=", 1)[1]
+        candidate_view = owner.get(f"/api/candidature-acces/{token}/visites")
+        assert candidate_view.status_code == 200
+        assert candidate_view.json()[0]["id"] == visit_id
+        confirmed = owner.post(
+            f"/api/candidature-acces/{token}/visites/{visit_id}/reponse",
+            json={"accepte": True},
+        )
+        assert confirmed.status_code == 200
+        assert confirmed.json()["statut"] == "confirmee"
+        assert owner.get(f"/api/biens/{property_id}/visites").json()[0]["statut"] == "confirmee"
+        assert owner.get(f"/api/biens/{property_id}/candidatures/{application_id}").json()["statut"] == "visite_confirmee"
+
+        duplicate = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/visites/proposer",
+            json={"slot_id": slot_id},
+        )
+        assert duplicate.status_code == 409
+
+
 def test_password_reset_token_is_single_use():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

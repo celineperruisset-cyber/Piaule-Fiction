@@ -124,6 +124,25 @@ L’agent peut préparer une demande ciblée avec `POST /api/biens/{id}/candidat
 
 Lorsqu’un e-mail entrant arrive sur une adresse d’annonce, le backend tente une association déterministe avec une candidature du même bien et de la même adresse e-mail. Une correspondance unique crée aussi un message entrant dans la conversation. Une correspondance ambiguë reste dans l’inbox pour traitement par l’agent.
 
+## Créneaux et visites
+
+Le propriétaire peut créer des créneaux de visite indépendants d’un calendrier externe avec :
+
+- `GET/POST /api/biens/{id}/visite-creneaux` pour consulter ou créer les disponibilités ;
+- `GET /api/biens/{id}/visite-creneaux?statut=libre` pour filtrer les créneaux utilisables ;
+- `GET /api/biens/{id}/visites` pour suivre les propositions et rendez-vous du bien ;
+- `POST /api/biens/{id}/candidatures/{application_id}/visites/proposer` pour réserver un créneau à une candidature complète ;
+- `POST /api/biens/{id}/visites/{visit_id}/annuler` pour libérer un créneau avec un motif.
+
+Une proposition est créée avec le statut `proposee` et réserve immédiatement le créneau. Le backend refuse une candidature incomplète, un créneau déjà réservé, un chevauchement de disponibilités ou un créneau associé à un autre lot. La proposition ne déclenche encore aucun e-mail, SMS ou invitation de calendrier : ces transmissions seront des actions de connecteur séparées et journalisées.
+
+Depuis son lien temporaire, le candidat peut consulter et répondre à ses propres propositions avec :
+
+- `GET /api/candidature-acces/{token}/visites` ;
+- `POST /api/candidature-acces/{token}/visites/{visit_id}/reponse`.
+
+Une acceptation passe la visite à `confirmee` et la candidature à `visite_confirmee`. Un refus libère le créneau et replace la candidature à `prete`. Les données d’un autre workspace ou d’une autre candidature ne sont jamais exposées par le lien candidat.
+
 La fiche comprend maintenant les types de location, équipements, disponibilité, photos, visibilité de l’adresse, informations DPE, mode de détention et premiers champs de copropriété. Les routes `POST/GET/PUT /api/biens/{id}/suivis` permettent de suivre diagnostics, assurances, contrats fournisseurs et documents de copropriété avec leurs échéances. `GET /api/echeances` remonte les éléments expirés ou arrivant à échéance.
 
 La comptabilité, la fiscalité, le financement, la rentabilité et les tableaux financiers ne font pas partie du produit. Les champs de loyer, charges et dépôt servent uniquement à configurer une mise en location et ses règles opérationnelles.

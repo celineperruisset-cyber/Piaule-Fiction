@@ -27,6 +27,8 @@ Pour chaque source ou outil, documenter avant développement : données accessib
 
 Les connecteurs de portails doivent être officiels ou explicitement autorisés. Aucun scraping, contournement anti-bot ou usage d'identifiants de tiers ne fait partie du produit.
 
+Le socle de visites est maintenant disponible sans connecteur externe : le propriétaire crée ses créneaux, l’agent propose un horaire à une candidature complète, puis le candidat accepte ou refuse depuis son lien sécurisé. La synchronisation Google/Outlook et les notifications seront ajoutées comme actions séparées après validation des permissions.
+
 ## Après le MVP
 
 - récupération de compte par SMS sur numéro vérifié, avec code à usage unique et limites d’envoi ;

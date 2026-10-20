@@ -21,7 +21,7 @@ import time
 import base64
 import unicodedata
 from contextlib import closing
-from datetime import date
+from datetime import date, datetime, timezone
 from email import policy
 from email.header import decode_header, make_header
 from email.message import EmailMessage, Message
@@ -349,6 +349,86 @@ class ApplicationStatusEvent(BaseModel):
     source: str
     motif: str
     created_at: str
+
+
+VisitSlotStatus = Literal["libre", "reserve", "bloque"]
+VisitMode = Literal["sur_place", "visio"]
+VisitStatus = Literal["proposee", "confirmee", "refusee", "annulee", "terminee"]
+
+
+class VisitSlotCreate(BaseModel):
+    lot_id: str | None = None
+    debut: str = Field(min_length=10, max_length=80)
+    fin: str = Field(min_length=10, max_length=80)
+    fuseau: str = Field(default="Europe/Paris", min_length=1, max_length=80)
+    mode: VisitMode = "sur_place"
+    note: str = Field(default="", max_length=500)
+
+
+class VisitSlot(BaseModel):
+    id: str
+    workspace_id: str
+    bien_id: str
+    lot_id: str | None = None
+    debut: str
+    fin: str
+    fuseau: str
+    mode: VisitMode
+    note: str
+    statut: VisitSlotStatus
+    created_at: str
+
+
+class VisitCreate(BaseModel):
+    slot_id: str
+    note: str = Field(default="", max_length=1000)
+
+
+class Visit(BaseModel):
+    id: str
+    workspace_id: str
+    bien_id: str
+    bien_nom: str
+    lot_id: str | None = None
+    lot_identifiant: str | None = None
+    candidature_id: str
+    candidat_prenom: str
+    candidat_nom: str
+    slot_id: str
+    debut: str
+    fin: str
+    fuseau: str
+    mode: VisitMode
+    statut: VisitStatus
+    source: Literal["proprietaire", "agent", "candidat"]
+    note: str
+    motif: str
+    created_at: str
+    updated_at: str
+
+
+class CandidateVisitResponse(BaseModel):
+    accepte: bool
+    motif: str = Field(default="", max_length=500)
+
+
+class VisitCancelRequest(BaseModel):
+    motif: str = Field(default="", max_length=500)
+
+
+class CandidateVisit(BaseModel):
+    id: str
+    bien_nom: str
+    lot_identifiant: str | None = None
+    debut: str
+    fin: str
+    fuseau: str
+    mode: VisitMode
+    statut: VisitStatus
+    note: str
+    motif: str
+    created_at: str
+    updated_at: str
 
 
 class ApplicationChannelCreate(BaseModel):
@@ -1058,6 +1138,46 @@ def _ensure_database() -> None:
                 FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS candidate_messages_application_idx ON candidate_messages(application_id, created_at);
+            CREATE TABLE IF NOT EXISTS visit_slots (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                lot_id TEXT,
+                starts_at TEXT NOT NULL,
+                ends_at TEXT NOT NULL,
+                timezone TEXT NOT NULL DEFAULT 'Europe/Paris',
+                mode TEXT NOT NULL DEFAULT 'sur_place',
+                note TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'libre',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                FOREIGN KEY(lot_id) REFERENCES lots(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS visit_slots_workspace_idx ON visit_slots(workspace_id, starts_at);
+            CREATE INDEX IF NOT EXISTS visit_slots_property_idx ON visit_slots(property_id, starts_at);
+            CREATE TABLE IF NOT EXISTS visits (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                lot_id TEXT,
+                application_id TEXT NOT NULL,
+                slot_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'proposee',
+                source TEXT NOT NULL DEFAULT 'agent',
+                note TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                FOREIGN KEY(lot_id) REFERENCES lots(id) ON DELETE SET NULL,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE,
+                FOREIGN KEY(slot_id) REFERENCES visit_slots(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS visits_workspace_idx ON visits(workspace_id, created_at);
+            CREATE INDEX IF NOT EXISTS visits_application_idx ON visits(application_id, created_at);
+            CREATE INDEX IF NOT EXISTS visits_slot_idx ON visits(slot_id, status);
             CREATE TABLE IF NOT EXISTS candidate_completeness_followups (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -1577,6 +1697,113 @@ def _application_from_row(row: sqlite3.Row) -> OwnerApplication:
         recue_le=row["recue_le"],
         updated_at=row["updated_at"],
     )
+
+
+def _parse_visit_datetime(value: str, field_name: str) -> str:
+    """Normalize an ISO datetime and require an explicit timezone."""
+
+    candidate = _clean_text(value, 80).replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field_name} doit être une date ISO 8601 valide avec fuseau horaire.",
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field_name} doit contenir un fuseau horaire explicite.",
+        )
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _visit_slot_from_row(row: sqlite3.Row) -> VisitSlot:
+    return VisitSlot(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        bien_id=row["property_id"],
+        lot_id=row["lot_id"],
+        debut=row["starts_at"],
+        fin=row["ends_at"],
+        fuseau=row["timezone"],
+        mode=row["mode"],
+        note=row["note"],
+        statut=row["status"],
+        created_at=row["created_at"],
+    )
+
+
+def _visit_from_row(row: sqlite3.Row) -> Visit:
+    return Visit(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        bien_id=row["property_id"],
+        bien_nom=row["bien_nom"],
+        lot_id=row["lot_id"],
+        lot_identifiant=row["lot_identifiant"],
+        candidature_id=row["application_id"],
+        candidat_prenom=row["candidat_prenom"],
+        candidat_nom=row["candidat_nom"],
+        slot_id=row["slot_id"],
+        debut=row["starts_at"],
+        fin=row["ends_at"],
+        fuseau=row["timezone"],
+        mode=row["mode"],
+        statut=row["status"],
+        source=row["source"],
+        note=row["note"],
+        motif=row["reason"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _candidate_visit_from_row(row: sqlite3.Row) -> CandidateVisit:
+    return CandidateVisit(
+        id=row["id"],
+        bien_nom=row["bien_nom"],
+        lot_identifiant=row["lot_identifiant"],
+        debut=row["starts_at"],
+        fin=row["ends_at"],
+        fuseau=row["timezone"],
+        mode=row["mode"],
+        statut=row["status"],
+        note=row["note"],
+        motif=row["reason"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _visit_query() -> str:
+    return """
+        SELECT v.*, p.nom AS bien_nom, l.identifiant AS lot_identifiant,
+               a.candidat_prenom, a.candidat_nom,
+               s.starts_at, s.ends_at, s.timezone, s.mode
+        FROM visits v
+        JOIN properties p ON p.id = v.property_id
+        LEFT JOIN lots l ON l.id = v.lot_id
+        JOIN owner_applications a ON a.id = v.application_id
+        JOIN visit_slots s ON s.id = v.slot_id
+    """
+
+
+def _owned_visit_row(
+    connection: sqlite3.Connection, owner: Candidate, property_id: str, visit_id: str
+) -> sqlite3.Row:
+    row = connection.execute(
+        _visit_query()
+        + " WHERE v.id = ? AND v.property_id = ? AND v.workspace_id = ?",
+        (visit_id, property_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Visite introuvable dans ce bien.")
+    return row
+
+
+def _active_visit_statuses() -> tuple[str, ...]:
+    return ("proposee", "confirmee")
 
 
 def _application_query() -> str:
@@ -3509,6 +3736,229 @@ def list_upcoming_deadlines(
     return [_property_record_from_row(row) for row in rows]
 
 
+def _clean_visit_slot_payload(payload: VisitSlotCreate) -> tuple[VisitSlotCreate, str, str]:
+    start = _parse_visit_datetime(payload.debut, "debut")
+    end = _parse_visit_datetime(payload.fin, "fin")
+    start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    if end_dt <= start_dt:
+        raise HTTPException(status_code=422, detail="La fin doit être postérieure au début.")
+    if (end_dt - start_dt).total_seconds() > 8 * 3600:
+        raise HTTPException(status_code=422, detail="Un créneau ne peut pas dépasser huit heures.")
+    cleaned = VisitSlotCreate(
+        lot_id=_clean_text(payload.lot_id, 80) if payload.lot_id else None,
+        debut=start,
+        fin=end,
+        fuseau=_clean_text(payload.fuseau, 80),
+        mode=payload.mode,
+        note=_clean_text(payload.note, 500),
+    )
+    return cleaned, start, end
+
+
+@app.get("/api/biens/{property_id}/visite-creneaux", response_model=list[VisitSlot])
+def list_visit_slots(
+    property_id: str,
+    statut: VisitSlotStatus | None = None,
+    owner: Candidate = Depends(current_candidate),
+) -> list[VisitSlot]:
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        query = "SELECT * FROM visit_slots WHERE property_id = ? AND workspace_id = ?"
+        values: list[object] = [property_id, owner.workspace_id]
+        if statut:
+            query += " AND status = ?"
+            values.append(statut)
+        query += " ORDER BY starts_at, id"
+        rows = connection.execute(query, values).fetchall()
+    return [_visit_slot_from_row(row) for row in rows]
+
+
+@app.post("/api/biens/{property_id}/visite-creneaux", response_model=VisitSlot, status_code=201)
+def create_visit_slot(
+    property_id: str,
+    payload: VisitSlotCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> VisitSlot:
+    """Create one owner availability slot, without contacting a candidate."""
+
+    cleaned, start, end = _clean_visit_slot_payload(payload)
+    slot_id = f"visit-slot-{uuid4().hex[:16]}"
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        if cleaned.lot_id:
+            _owned_lot_row(connection, owner, property_id, cleaned.lot_id)
+        scope_clause = "(lot_id = ? OR lot_id IS NULL)" if cleaned.lot_id else "lot_id IS NULL"
+        overlap = connection.execute(
+            f"""
+            SELECT id FROM visit_slots
+            WHERE property_id = ? AND workspace_id = ? AND status <> 'bloque'
+              AND {scope_clause} AND starts_at < ? AND ends_at > ?
+            LIMIT 1
+            """,
+            (
+                property_id,
+                owner.workspace_id,
+                *( [cleaned.lot_id] if cleaned.lot_id else [] ),
+                end,
+                start,
+            ),
+        ).fetchone()
+        if overlap is not None:
+            raise HTTPException(status_code=409, detail="Ce créneau chevauche déjà une disponibilité.")
+        connection.execute(
+            """
+            INSERT INTO visit_slots(
+                id, workspace_id, property_id, lot_id, starts_at, ends_at,
+                timezone, mode, note, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'libre', datetime('now'))
+            """,
+            (
+                slot_id,
+                owner.workspace_id,
+                property_id,
+                cleaned.lot_id,
+                start,
+                end,
+                cleaned.fuseau,
+                cleaned.mode,
+                cleaned.note,
+            ),
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM visit_slots WHERE id = ?", (slot_id,)).fetchone()
+    return _visit_slot_from_row(row)
+
+
+@app.post(
+    "/api/biens/{property_id}/candidatures/{application_id}/visites/proposer",
+    response_model=Visit,
+    status_code=201,
+)
+def propose_application_visit(
+    property_id: str,
+    application_id: str,
+    payload: VisitCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> Visit:
+    """Reserve an available slot for a complete application.
+
+    This creates a proposal only. Sending an e-mail or calendar invitation is a
+    separate connector action and is deliberately not performed here.
+    """
+
+    note = _clean_text(payload.note, 1000)
+    visit_id = f"visit-{uuid4().hex[:16]}"
+    with closing(_connect()) as connection:
+        application = _application_for_owner(connection, owner, property_id, application_id)
+        completeness = _application_completeness(connection, owner.workspace_id, application_id)
+        if completeness.statut != "complet":
+            raise HTTPException(status_code=409, detail="La candidature doit être complète avant de proposer une visite.")
+        slot = connection.execute(
+            """
+            SELECT * FROM visit_slots
+            WHERE id = ? AND property_id = ? AND workspace_id = ? AND status = 'libre'
+            """,
+            (payload.slot_id, property_id, owner.workspace_id),
+        ).fetchone()
+        if slot is None:
+            raise HTTPException(status_code=409, detail="Ce créneau n'est plus disponible.")
+        if slot["lot_id"] and slot["lot_id"] != application["lot_id"]:
+            raise HTTPException(status_code=409, detail="Ce créneau ne correspond pas au lot de la candidature.")
+        existing = connection.execute(
+            """
+            SELECT id FROM visits
+            WHERE workspace_id = ? AND slot_id = ? AND status IN ('proposee', 'confirmee')
+            LIMIT 1
+            """,
+            (owner.workspace_id, payload.slot_id),
+        ).fetchone()
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="Ce créneau est déjà réservé.")
+        connection.execute(
+            """
+            INSERT INTO visits(
+                id, workspace_id, property_id, lot_id, application_id, slot_id,
+                status, source, note, reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'proposee', 'agent', ?, '', datetime('now'), datetime('now'))
+            """,
+            (
+                visit_id,
+                owner.workspace_id,
+                property_id,
+                application["lot_id"],
+                application_id,
+                payload.slot_id,
+                note,
+            ),
+        )
+        connection.execute("UPDATE visit_slots SET status = 'reserve' WHERE id = ?", (payload.slot_id,))
+        _set_application_status(
+            connection,
+            workspace_id=owner.workspace_id,
+            application_id=application_id,
+            new_status="visite_proposee",
+            source="agent",
+            reason="Créneau proposé après vérification de la complétude.",
+        )
+        connection.commit()
+        row = _owned_visit_row(connection, owner, property_id, visit_id)
+    return _visit_from_row(row)
+
+
+@app.get("/api/biens/{property_id}/visites", response_model=list[Visit])
+def list_property_visits(
+    property_id: str,
+    statut: VisitStatus | None = None,
+    owner: Candidate = Depends(current_candidate),
+) -> list[Visit]:
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        query = _visit_query() + " WHERE v.property_id = ? AND v.workspace_id = ?"
+        values: list[object] = [property_id, owner.workspace_id]
+        if statut:
+            query += " AND v.status = ?"
+            values.append(statut)
+        query += " ORDER BY s.starts_at, v.created_at"
+        rows = connection.execute(query, values).fetchall()
+    return [_visit_from_row(row) for row in rows]
+
+
+@app.post("/api/biens/{property_id}/visites/{visit_id}/annuler", response_model=Visit)
+def cancel_property_visit(
+    property_id: str,
+    visit_id: str,
+    payload: VisitCancelRequest,
+    owner: Candidate = Depends(current_candidate),
+) -> Visit:
+    with closing(_connect()) as connection:
+        row = _owned_visit_row(connection, owner, property_id, visit_id)
+        if row["status"] in {"annulee", "refusee", "terminee"}:
+            return _visit_from_row(row)
+        reason = _clean_text(payload.motif, 500) or "Visite annulée par le propriétaire."
+        connection.execute(
+            "UPDATE visits SET status = 'annulee', reason = ?, updated_at = datetime('now') WHERE id = ?",
+            (reason, visit_id),
+        )
+        connection.execute("UPDATE visit_slots SET status = 'libre' WHERE id = ?", (row["slot_id"],))
+        application = connection.execute(
+            "SELECT statut FROM owner_applications WHERE id = ? AND workspace_id = ?",
+            (row["application_id"], owner.workspace_id),
+        ).fetchone()
+        if application and application["statut"] in {"visite_proposee", "visite_confirmee"}:
+            _set_application_status(
+                connection,
+                workspace_id=owner.workspace_id,
+                application_id=row["application_id"],
+                new_status="prete",
+                source="proprietaire",
+                reason=reason,
+            )
+        connection.commit()
+        updated = _owned_visit_row(connection, owner, property_id, visit_id)
+    return _visit_from_row(updated)
+
+
 @app.get("/api/candidatures", response_model=list[OwnerApplication])
 def list_all_applications(owner: Candidate = Depends(current_candidate)) -> list[OwnerApplication]:
     """List the application pipeline across the current owner's portfolio."""
@@ -4372,6 +4822,79 @@ def candidate_portal_view(token: str) -> CandidatePortalView:
         statut_candidature=access["candidature_statut"],
         completude=completeness,
     )
+
+
+@app.get("/api/candidature-acces/{token}/visites", response_model=list[CandidateVisit])
+def candidate_portal_visits(token: str) -> list[CandidateVisit]:
+    """Show only the candidate's own proposed or confirmed visits."""
+
+    access = _active_candidate_access_row(token)
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            _visit_query()
+            + " WHERE v.workspace_id = ? AND v.application_id = ? "
+            + "AND v.status IN ('proposee', 'confirmee') ORDER BY s.starts_at",
+            (access["workspace_id"], access["application_id"]),
+        ).fetchall()
+    return [_candidate_visit_from_row(row) for row in rows]
+
+
+@app.post(
+    "/api/candidature-acces/{token}/visites/{visit_id}/reponse",
+    response_model=CandidateVisit,
+)
+def candidate_portal_visit_response(
+    token: str,
+    visit_id: str,
+    payload: CandidateVisitResponse,
+) -> CandidateVisit:
+    """Accept or refuse a proposed slot from the candidate portal."""
+
+    access = _active_candidate_access_row(token)
+    reason = _clean_text(payload.motif, 500)
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            _visit_query()
+            + " WHERE v.id = ? AND v.workspace_id = ? AND v.application_id = ?",
+            (visit_id, access["workspace_id"], access["application_id"]),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Visite introuvable dans ce dossier.")
+        if row["status"] != "proposee":
+            raise HTTPException(status_code=409, detail="Cette proposition de visite a déjà reçu une réponse.")
+        if payload.accepte:
+            connection.execute(
+                "UPDATE visits SET status = 'confirmee', source = 'candidat', reason = ?, updated_at = datetime('now') WHERE id = ?",
+                (reason or "Créneau accepté par le candidat.", visit_id),
+            )
+            _set_application_status(
+                connection,
+                workspace_id=access["workspace_id"],
+                application_id=access["application_id"],
+                new_status="visite_confirmee",
+                source="candidat",
+                reason=reason or "Visite acceptée par le candidat.",
+            )
+        else:
+            connection.execute(
+                "UPDATE visits SET status = 'refusee', source = 'candidat', reason = ?, updated_at = datetime('now') WHERE id = ?",
+                (reason or "Créneau refusé par le candidat.", visit_id),
+            )
+            connection.execute("UPDATE visit_slots SET status = 'libre' WHERE id = ?", (row["slot_id"],))
+            _set_application_status(
+                connection,
+                workspace_id=access["workspace_id"],
+                application_id=access["application_id"],
+                new_status="prete",
+                source="candidat",
+                reason=reason or "Le candidat a refusé le créneau.",
+            )
+        connection.commit()
+        updated = connection.execute(
+            _visit_query() + " WHERE v.id = ? AND v.workspace_id = ?",
+            (visit_id, access["workspace_id"]),
+        ).fetchone()
+    return _candidate_visit_from_row(updated)
 
 
 @app.post("/api/candidature-acces/{token}/messages", response_model=CandidateMessage, status_code=201)
