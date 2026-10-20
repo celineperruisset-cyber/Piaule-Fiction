@@ -40,3 +40,5 @@ Le premier domaine persistant est maintenant disponible :
 - `GET` et `PUT /api/biens/{id}/lots/{lot_id}` pour une unité précise.
 
 Toutes ces routes exigent une session propriétaire et filtrent par `workspace_id`. Un lot possède un identifiant unique dans son bien, ses caractéristiques principales, ses paramètres financiers et un statut de cycle de vie (`brouillon`, `disponible`, `occupe`, `archive`).
+
+Cette première fiche est volontairement minimale. Les extensions prévues sont documentées dans [`PROPERTY_MANAGEMENT_RESEARCH.md`](PROPERTY_MANAGEMENT_RESEARCH.md) : types de location, équipements, disponibilité, diagnostics et échéances, puis immeubles, tantièmes, copropriété et rentabilité.
