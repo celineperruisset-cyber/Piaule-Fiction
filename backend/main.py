@@ -194,6 +194,105 @@ class PropertyRecord(PropertyRecordCreate):
     updated_at: str
 
 
+ApplicationStatus = Literal[
+    "recue",
+    "a_completer",
+    "en_verification",
+    "prete",
+    "visite_proposee",
+    "visite_confirmee",
+    "retenue",
+    "refusee",
+    "retiree",
+]
+
+
+class OwnerApplicationCreate(BaseModel):
+    lot_id: str | None = None
+    candidat_prenom: str = Field(min_length=1, max_length=80)
+    candidat_nom: str = Field(min_length=1, max_length=120)
+    candidat_email: str = Field(default="", max_length=254)
+    candidat_telephone: str = Field(default="", max_length=30)
+    source: Literal["formulaire", "email", "dossier_facile", "import", "partenaire", "autre"] = "formulaire"
+    reference_source: str = Field(default="", max_length=160)
+    statut: ApplicationStatus = "recue"
+    notes_privees: str = Field(default="", max_length=3000)
+
+
+class OwnerApplicationUpdate(BaseModel):
+    lot_id: str | None = None
+    candidat_prenom: str | None = Field(default=None, min_length=1, max_length=80)
+    candidat_nom: str | None = Field(default=None, min_length=1, max_length=120)
+    candidat_email: str | None = Field(default=None, max_length=254)
+    candidat_telephone: str | None = Field(default=None, max_length=30)
+    source: Literal["formulaire", "email", "dossier_facile", "import", "partenaire", "autre"] | None = None
+    reference_source: str | None = Field(default=None, max_length=160)
+    statut: ApplicationStatus | None = None
+    notes_privees: str | None = Field(default=None, max_length=3000)
+
+
+class OwnerApplication(BaseModel):
+    id: str
+    workspace_id: str
+    bien_id: str
+    bien_nom: str
+    lot_id: str | None = None
+    lot_identifiant: str | None = None
+    candidat_prenom: str
+    candidat_nom: str
+    candidat_email: str
+    candidat_telephone: str
+    source: str
+    reference_source: str
+    statut: ApplicationStatus
+    doublon_possible: bool = False
+    notes_privees: str
+    recue_le: str
+    updated_at: str
+
+
+class ApplicationChannelCreate(BaseModel):
+    lot_id: str | None = None
+    canal: Literal["leboncoin", "seloger", "pap", "site_agence", "site_proprietaire", "autre"]
+    libelle: str = Field(default="", max_length=160)
+
+
+class ApplicationChannel(ApplicationChannelCreate):
+    id: str
+    workspace_id: str
+    bien_id: str
+    adresse_reception: str
+    actif: bool = True
+    created_at: str
+
+
+class InboundApplicationEmail(BaseModel):
+    adresse_reception: str
+    message_id: str = Field(min_length=1, max_length=300)
+    expediteur_email: str = Field(default="", max_length=254)
+    objet: str = Field(default="", max_length=500)
+    contenu_texte: str = Field(default="", max_length=100_000)
+    pieces_jointes: list[str] = Field(default_factory=list)
+    recu_le: str | None = None
+
+
+class InboundApplicationMessage(BaseModel):
+    id: str
+    workspace_id: str
+    canal_id: str
+    bien_id: str
+    lot_id: str | None = None
+    adresse_reception: str
+    message_id: str
+    expediteur_email: str
+    objet: str
+    contenu_texte: str
+    pieces_jointes: list[str]
+    statut: Literal["recue", "en_analyse", "associee", "a_verifier", "rejetee"]
+    candidature_id: str | None = None
+    recu_le: str
+
+
 class PasswordChangeRequest(BaseModel):
     current_mdp: str = Field(min_length=1, max_length=128)
     nouveau_mdp: str = Field(min_length=8, max_length=128)
@@ -433,6 +532,71 @@ def _ensure_database() -> None:
             CREATE INDEX IF NOT EXISTS property_records_workspace_idx ON property_records(workspace_id);
             CREATE INDEX IF NOT EXISTS property_records_property_idx ON property_records(property_id);
             CREATE INDEX IF NOT EXISTS property_records_expiry_idx ON property_records(date_expiration);
+            CREATE TABLE IF NOT EXISTS owner_applications (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                lot_id TEXT,
+                candidat_prenom TEXT NOT NULL,
+                candidat_nom TEXT NOT NULL,
+                candidat_email TEXT NOT NULL DEFAULT '',
+                candidat_telephone TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL,
+                reference_source TEXT NOT NULL DEFAULT '',
+                statut TEXT NOT NULL,
+                duplicate_key TEXT NOT NULL DEFAULT '',
+                doublon_possible INTEGER NOT NULL DEFAULT 0,
+                notes_privees TEXT NOT NULL DEFAULT '',
+                recue_le TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                FOREIGN KEY(lot_id) REFERENCES lots(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS owner_applications_workspace_idx ON owner_applications(workspace_id);
+            CREATE INDEX IF NOT EXISTS owner_applications_property_idx ON owner_applications(property_id);
+            CREATE INDEX IF NOT EXISTS owner_applications_duplicate_idx ON owner_applications(duplicate_key);
+            CREATE TABLE IF NOT EXISTS application_channels (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                lot_id TEXT,
+                canal TEXT NOT NULL,
+                libelle TEXT NOT NULL DEFAULT '',
+                adresse_reception TEXT NOT NULL UNIQUE,
+                actif INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                FOREIGN KEY(lot_id) REFERENCES lots(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS application_channels_workspace_idx ON application_channels(workspace_id);
+            CREATE INDEX IF NOT EXISTS application_channels_property_idx ON application_channels(property_id);
+            CREATE TABLE IF NOT EXISTS inbound_application_messages (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                lot_id TEXT,
+                adresse_reception TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                expediteur_email TEXT NOT NULL DEFAULT '',
+                objet TEXT NOT NULL DEFAULT '',
+                contenu_texte TEXT NOT NULL DEFAULT '',
+                pieces_jointes_json TEXT NOT NULL DEFAULT '[]',
+                statut TEXT NOT NULL,
+                application_id TEXT,
+                recu_le TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(workspace_id, message_id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(channel_id) REFERENCES application_channels(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                FOREIGN KEY(lot_id) REFERENCES lots(id) ON DELETE SET NULL,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS inbound_application_workspace_idx ON inbound_application_messages(workspace_id);
+            CREATE INDEX IF NOT EXISTS inbound_application_channel_idx ON inbound_application_messages(channel_id);
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
                 email TEXT NOT NULL,
@@ -874,6 +1038,142 @@ def _property_record_from_row(row: sqlite3.Row) -> PropertyRecord:
         notes=row["notes"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _application_from_row(row: sqlite3.Row) -> OwnerApplication:
+    return OwnerApplication(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        bien_id=row["property_id"],
+        bien_nom=row["bien_nom"],
+        lot_id=row["lot_id"],
+        lot_identifiant=row["lot_identifiant"],
+        candidat_prenom=row["candidat_prenom"],
+        candidat_nom=row["candidat_nom"],
+        candidat_email=row["candidat_email"],
+        candidat_telephone=row["candidat_telephone"],
+        source=row["source"],
+        reference_source=row["reference_source"],
+        statut=row["statut"],
+        doublon_possible=bool(row["doublon_possible"]),
+        notes_privees=row["notes_privees"],
+        recue_le=row["recue_le"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _application_query() -> str:
+    return """
+        SELECT a.*, p.nom AS bien_nom, l.identifiant AS lot_identifiant
+        FROM owner_applications a
+        JOIN properties p ON p.id = a.property_id
+        LEFT JOIN lots l ON l.id = a.lot_id
+    """
+
+
+def _owned_application_row(
+    connection: sqlite3.Connection, owner: Candidate, application_id: str
+) -> sqlite3.Row:
+    row = connection.execute(
+        _application_query() + " WHERE a.id = ? AND a.workspace_id = ?",
+        (application_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Candidature introuvable dans ce workspace.")
+    return row
+
+
+def _clean_application_create(payload: OwnerApplicationCreate) -> OwnerApplicationCreate:
+    email = _normalise_email(payload.candidat_email) if payload.candidat_email else ""
+    if email and not EMAIL_RE.fullmatch(email):
+        raise HTTPException(status_code=400, detail="L'adresse e-mail du candidat est invalide.")
+    return OwnerApplicationCreate(
+        lot_id=_clean_text(payload.lot_id, 80) if payload.lot_id else None,
+        candidat_prenom=_clean_text(payload.candidat_prenom, 80),
+        candidat_nom=_clean_text(payload.candidat_nom, 120),
+        candidat_email=email,
+        candidat_telephone=_clean_text(payload.candidat_telephone, 30),
+        source=payload.source,
+        reference_source=_clean_text(payload.reference_source, 160),
+        statut=payload.statut,
+        notes_privees=_clean_text(payload.notes_privees, 3000),
+    )
+
+
+def _clean_application_update(payload: OwnerApplicationUpdate) -> OwnerApplicationUpdate:
+    email = _normalise_email(payload.candidat_email) if payload.candidat_email else payload.candidat_email
+    if email and not EMAIL_RE.fullmatch(email):
+        raise HTTPException(status_code=400, detail="L'adresse e-mail du candidat est invalide.")
+    return OwnerApplicationUpdate(
+        lot_id=_clean_text(payload.lot_id, 80) if payload.lot_id else payload.lot_id,
+        candidat_prenom=_clean_text(payload.candidat_prenom, 80) if payload.candidat_prenom else payload.candidat_prenom,
+        candidat_nom=_clean_text(payload.candidat_nom, 120) if payload.candidat_nom else payload.candidat_nom,
+        candidat_email=email,
+        candidat_telephone=_clean_text(payload.candidat_telephone, 30) if payload.candidat_telephone else payload.candidat_telephone,
+        source=payload.source,
+        reference_source=_clean_text(payload.reference_source, 160) if payload.reference_source else payload.reference_source,
+        statut=payload.statut,
+        notes_privees=_clean_text(payload.notes_privees, 3000) if payload.notes_privees else payload.notes_privees,
+    )
+
+
+def _application_duplicate_key(property_id: str, lot_id: str | None, email: str) -> str:
+    if not email:
+        return ""
+    return "|".join((property_id, lot_id or "", email))
+
+
+def _application_channel_from_row(row: sqlite3.Row) -> ApplicationChannel:
+    return ApplicationChannel(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        bien_id=row["property_id"],
+        lot_id=row["lot_id"],
+        canal=row["canal"],
+        libelle=row["libelle"],
+        adresse_reception=row["adresse_reception"],
+        actif=bool(row["actif"]),
+        created_at=row["created_at"],
+    )
+
+
+def _inbound_message_from_row(row: sqlite3.Row) -> InboundApplicationMessage:
+    return InboundApplicationMessage(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        canal_id=row["channel_id"],
+        bien_id=row["property_id"],
+        lot_id=row["lot_id"],
+        adresse_reception=row["adresse_reception"],
+        message_id=row["message_id"],
+        expediteur_email=row["expediteur_email"],
+        objet=row["objet"],
+        contenu_texte=row["contenu_texte"],
+        pieces_jointes=json.loads(row["pieces_jointes_json"] or "[]"),
+        statut=row["statut"],
+        candidature_id=row["application_id"],
+        recu_le=row["recu_le"],
+    )
+
+
+def _owned_application_channel_row(
+    connection: sqlite3.Connection, owner: Candidate, channel_id: str
+) -> sqlite3.Row:
+    row = connection.execute(
+        "SELECT * FROM application_channels WHERE id = ? AND workspace_id = ?",
+        (channel_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Canal de candidature introuvable dans ce workspace.")
+    return row
+
+
+def _clean_application_channel(payload: ApplicationChannelCreate) -> ApplicationChannelCreate:
+    return ApplicationChannelCreate(
+        lot_id=_clean_text(payload.lot_id, 80) if payload.lot_id else None,
+        canal=payload.canal,
+        libelle=_clean_text(payload.libelle, 160),
     )
 
 
@@ -1792,6 +2092,368 @@ def list_upcoming_deadlines(
             (owner.workspace_id, limit.isoformat()),
         ).fetchall()
     return [_property_record_from_row(row) for row in rows]
+
+
+@app.get("/api/candidatures", response_model=list[OwnerApplication])
+def list_all_applications(owner: Candidate = Depends(current_candidate)) -> list[OwnerApplication]:
+    """List the application pipeline across the current owner's portfolio."""
+
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            _application_query()
+            + " WHERE a.workspace_id = ? ORDER BY a.recue_le DESC, a.id",
+            (owner.workspace_id,),
+        ).fetchall()
+    return [_application_from_row(row) for row in rows]
+
+
+@app.get("/api/biens/{property_id}/canaux-candidatures", response_model=list[ApplicationChannel])
+def list_application_channels(
+    property_id: str, owner: Candidate = Depends(current_candidate)
+) -> list[ApplicationChannel]:
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        rows = connection.execute(
+            """
+            SELECT * FROM application_channels
+            WHERE property_id = ? AND workspace_id = ?
+            ORDER BY created_at DESC, id
+            """,
+            (property_id, owner.workspace_id),
+        ).fetchall()
+    return [_application_channel_from_row(row) for row in rows]
+
+
+@app.post("/api/biens/{property_id}/canaux-candidatures", response_model=ApplicationChannel, status_code=201)
+def create_application_channel(
+    property_id: str,
+    payload: ApplicationChannelCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> ApplicationChannel:
+    """Create a unique reception address to place in an external listing."""
+
+    cleaned = _clean_application_channel(payload)
+    channel_id = f"canal-{uuid4().hex[:16]}"
+    domain = os.getenv("PIAULE_APPLICATION_EMAIL_DOMAIN", "piaulefiction.fr").strip().lower()
+    if not domain or "." not in domain or any(character.isspace() for character in domain):
+        raise HTTPException(status_code=503, detail="Le domaine de réception des candidatures n'est pas configuré.")
+    address = f"candidatures+{secrets.token_hex(10)}@{domain}"
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        if cleaned.lot_id:
+            _owned_lot_row(connection, owner, property_id, cleaned.lot_id)
+        connection.execute(
+            """
+            INSERT INTO application_channels(
+                id, workspace_id, property_id, lot_id, canal, libelle,
+                adresse_reception, actif, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
+            """,
+            (
+                channel_id,
+                owner.workspace_id,
+                property_id,
+                cleaned.lot_id,
+                cleaned.canal,
+                cleaned.libelle,
+                address,
+            ),
+        )
+        connection.commit()
+        row = _owned_application_channel_row(connection, owner, channel_id)
+    return _application_channel_from_row(row)
+
+
+@app.get("/api/candidatures/inbox", response_model=list[InboundApplicationMessage])
+def list_inbound_application_messages(
+    owner: Candidate = Depends(current_candidate),
+) -> list[InboundApplicationMessage]:
+    """List raw messages waiting for agent extraction and association."""
+
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM inbound_application_messages
+            WHERE workspace_id = ?
+            ORDER BY recu_le DESC, id
+            """,
+            (owner.workspace_id,),
+        ).fetchall()
+    return [_inbound_message_from_row(row) for row in rows]
+
+
+@app.post("/api/internal/candidatures/inbound", response_model=InboundApplicationMessage)
+def ingest_inbound_application_email(
+    payload: InboundApplicationEmail, request: Request
+) -> InboundApplicationMessage:
+    """Receive a normalized email from the future mailbox provider/webhook."""
+
+    expected_token = os.getenv("PIAULE_INBOUND_WEBHOOK_TOKEN", "").strip()
+    received_token = request.headers.get("x-piaule-inbound-token", "")
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="La réception des candidatures n'est pas configurée.")
+    if not hmac.compare_digest(received_token, expected_token):
+        raise HTTPException(status_code=401, detail="Jeton de réception invalide.")
+
+    reception_address = _normalise_email(payload.adresse_reception)
+    sender = _normalise_email(payload.expediteur_email) if payload.expediteur_email else ""
+    if sender and not EMAIL_RE.fullmatch(sender):
+        sender = ""
+    attachments = _clean_string_list(payload.pieces_jointes, maximum_items=50, maximum_length=240)
+    with closing(_connect()) as connection:
+        channel = connection.execute(
+            """
+            SELECT * FROM application_channels
+            WHERE lower(adresse_reception) = ? AND actif = 1
+            """,
+            (reception_address,),
+        ).fetchone()
+        if channel is None:
+            raise HTTPException(status_code=404, detail="Adresse de réception inconnue ou désactivée.")
+        existing = connection.execute(
+            """
+            SELECT * FROM inbound_application_messages
+            WHERE workspace_id = ? AND message_id = ?
+            """,
+            (channel["workspace_id"], payload.message_id),
+        ).fetchone()
+        if existing is not None:
+            return _inbound_message_from_row(existing)
+
+        message_id = f"message-{uuid4().hex[:16]}"
+        connection.execute(
+            """
+            INSERT INTO inbound_application_messages(
+                id, workspace_id, channel_id, property_id, lot_id, adresse_reception,
+                message_id, expediteur_email, objet, contenu_texte, pieces_jointes_json,
+                statut, recu_le, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'recue', COALESCE(?, datetime('now')), datetime('now'))
+            """,
+            (
+                message_id,
+                channel["workspace_id"],
+                channel["id"],
+                channel["property_id"],
+                channel["lot_id"],
+                channel["adresse_reception"],
+                payload.message_id,
+                sender,
+                _clean_text(payload.objet, 500),
+                _clean_text(payload.contenu_texte, 100_000),
+                json.dumps(attachments, ensure_ascii=False),
+                _clean_text(payload.recu_le, 80) if payload.recu_le else None,
+            ),
+        )
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM inbound_application_messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
+    return _inbound_message_from_row(row)
+
+
+class AssociateInboundApplication(BaseModel):
+    candidature_id: str = Field(min_length=1, max_length=100)
+
+
+@app.put("/api/candidatures/inbox/{message_id}/associer", response_model=InboundApplicationMessage)
+def associate_inbound_application(
+    message_id: str,
+    payload: AssociateInboundApplication,
+    owner: Candidate = Depends(current_candidate),
+) -> InboundApplicationMessage:
+    """Attach an analyzed inbound message to an owner application."""
+
+    with closing(_connect()) as connection:
+        message = connection.execute(
+            "SELECT * FROM inbound_application_messages WHERE id = ? AND workspace_id = ?",
+            (message_id, owner.workspace_id),
+        ).fetchone()
+        if message is None:
+            raise HTTPException(status_code=404, detail="Message entrant introuvable.")
+        application = connection.execute(
+            "SELECT id FROM owner_applications WHERE id = ? AND workspace_id = ? AND property_id = ?",
+            (payload.candidature_id, owner.workspace_id, message["property_id"]),
+        ).fetchone()
+        if application is None:
+            raise HTTPException(status_code=404, detail="La candidature ne correspond pas au bien du message.")
+        connection.execute(
+            "UPDATE inbound_application_messages SET application_id = ?, statut = 'associee' WHERE id = ? AND workspace_id = ?",
+            (payload.candidature_id, message_id, owner.workspace_id),
+        )
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM inbound_application_messages WHERE id = ? AND workspace_id = ?",
+            (message_id, owner.workspace_id),
+        ).fetchone()
+    return _inbound_message_from_row(row)
+
+
+@app.get("/api/biens/{property_id}/candidatures", response_model=list[OwnerApplication])
+def list_property_applications(
+    property_id: str, owner: Candidate = Depends(current_candidate)
+) -> list[OwnerApplication]:
+    """List applications attached to one owned property."""
+
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        rows = connection.execute(
+            _application_query()
+            + " WHERE a.property_id = ? AND a.workspace_id = ? ORDER BY a.recue_le DESC, a.id",
+            (property_id, owner.workspace_id),
+        ).fetchall()
+    return [_application_from_row(row) for row in rows]
+
+
+@app.post("/api/biens/{property_id}/candidatures", response_model=OwnerApplication, status_code=201)
+def create_property_application(
+    property_id: str,
+    payload: OwnerApplicationCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> OwnerApplication:
+    """Receive an application and attach it to an owned property and optional lot."""
+
+    cleaned = _clean_application_create(payload)
+    application_id = f"candidature-{uuid4().hex[:16]}"
+    duplicate_key = _application_duplicate_key(property_id, cleaned.lot_id, cleaned.candidat_email)
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        if cleaned.lot_id:
+            _owned_lot_row(connection, owner, property_id, cleaned.lot_id)
+        existing = None
+        if duplicate_key:
+            existing = connection.execute(
+                "SELECT id FROM owner_applications WHERE workspace_id = ? AND duplicate_key = ?",
+                (owner.workspace_id, duplicate_key),
+            ).fetchone()
+        duplicate = existing is not None
+        connection.execute(
+            """
+            INSERT INTO owner_applications(
+                id, workspace_id, property_id, lot_id, candidat_prenom, candidat_nom,
+                candidat_email, candidat_telephone, source, reference_source, statut,
+                duplicate_key, doublon_possible, notes_privees, recue_le, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            """,
+            (
+                application_id,
+                owner.workspace_id,
+                property_id,
+                cleaned.lot_id,
+                cleaned.candidat_prenom,
+                cleaned.candidat_nom,
+                cleaned.candidat_email,
+                cleaned.candidat_telephone,
+                cleaned.source,
+                cleaned.reference_source,
+                cleaned.statut,
+                duplicate_key,
+                int(duplicate),
+                cleaned.notes_privees,
+            ),
+        )
+        if existing is not None:
+            connection.execute(
+                "UPDATE owner_applications SET doublon_possible = 1 WHERE id = ?",
+                (existing["id"],),
+            )
+        connection.commit()
+        row = _owned_application_row(connection, owner, application_id)
+    return _application_from_row(row)
+
+
+@app.get("/api/biens/{property_id}/candidatures/{application_id}", response_model=OwnerApplication)
+def get_property_application(
+    property_id: str,
+    application_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> OwnerApplication:
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        row = connection.execute(
+            _application_query()
+            + " WHERE a.id = ? AND a.property_id = ? AND a.workspace_id = ?",
+            (application_id, property_id, owner.workspace_id),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Candidature introuvable dans ce bien.")
+    return _application_from_row(row)
+
+
+@app.put("/api/biens/{property_id}/candidatures/{application_id}", response_model=OwnerApplication)
+def update_property_application(
+    property_id: str,
+    application_id: str,
+    payload: OwnerApplicationUpdate,
+    owner: Candidate = Depends(current_candidate),
+) -> OwnerApplication:
+    """Update a candidate application while keeping it in the same workspace."""
+
+    cleaned = _clean_application_update(payload)
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        current = connection.execute(
+            "SELECT * FROM owner_applications WHERE id = ? AND property_id = ? AND workspace_id = ?",
+            (application_id, property_id, owner.workspace_id),
+        ).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="Candidature introuvable dans ce bien.")
+
+        lot_id = cleaned.lot_id if cleaned.lot_id is not None else current["lot_id"]
+        if lot_id:
+            _owned_lot_row(connection, owner, property_id, lot_id)
+        candidat_prenom = cleaned.candidat_prenom if cleaned.candidat_prenom is not None else current["candidat_prenom"]
+        candidat_nom = cleaned.candidat_nom if cleaned.candidat_nom is not None else current["candidat_nom"]
+        candidat_email = cleaned.candidat_email if cleaned.candidat_email is not None else current["candidat_email"]
+        candidat_telephone = cleaned.candidat_telephone if cleaned.candidat_telephone is not None else current["candidat_telephone"]
+        source = cleaned.source if cleaned.source is not None else current["source"]
+        reference_source = cleaned.reference_source if cleaned.reference_source is not None else current["reference_source"]
+        statut = cleaned.statut if cleaned.statut is not None else current["statut"]
+        notes_privees = cleaned.notes_privees if cleaned.notes_privees is not None else current["notes_privees"]
+        duplicate_key = _application_duplicate_key(property_id, lot_id, candidat_email)
+        duplicate = False
+        if duplicate_key:
+            duplicate = connection.execute(
+                """
+                SELECT 1 FROM owner_applications
+                WHERE workspace_id = ? AND duplicate_key = ? AND id <> ?
+                LIMIT 1
+                """,
+                (owner.workspace_id, duplicate_key, application_id),
+            ).fetchone() is not None
+        connection.execute(
+            """
+            UPDATE owner_applications SET
+                lot_id = ?, candidat_prenom = ?, candidat_nom = ?, candidat_email = ?,
+                candidat_telephone = ?, source = ?, reference_source = ?, statut = ?,
+                duplicate_key = ?, doublon_possible = ?, notes_privees = ?, updated_at = datetime('now')
+            WHERE id = ? AND property_id = ? AND workspace_id = ?
+            """,
+            (
+                lot_id,
+                candidat_prenom,
+                candidat_nom,
+                candidat_email,
+                candidat_telephone,
+                source,
+                reference_source,
+                statut,
+                duplicate_key,
+                int(duplicate or bool(current["doublon_possible"])),
+                notes_privees,
+                application_id,
+                property_id,
+                owner.workspace_id,
+            ),
+        )
+        if duplicate:
+            connection.execute(
+                "UPDATE owner_applications SET doublon_possible = 1 WHERE workspace_id = ? AND duplicate_key = ?",
+                (owner.workspace_id, duplicate_key),
+            )
+        connection.commit()
+        row = _owned_application_row(connection, owner, application_id)
+    return _application_from_row(row)
 
 
 @app.post("/api/mot-de-passe")

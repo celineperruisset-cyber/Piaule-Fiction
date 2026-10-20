@@ -210,3 +210,124 @@ def test_properties_and_lots_are_persisted_and_isolated_by_workspace():
         assert updated.status_code == 200
         assert updated.json()["loyer_mensuel_eur"] == 720
         assert updated.json()["statut"] == "occupe"
+
+
+def test_owner_applications_are_attached_to_property_and_duplicates_are_flagged():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        owner = TestClient(main.app)
+        other = TestClient(main.app)
+
+        for client, prenom, email in (
+            (owner, "Celine", "application-owner@example.test"),
+            (other, "Other", "application-other@example.test"),
+        ):
+            assert client.post(
+                "/api/compte",
+                json={
+                    "action": "creer",
+                    "prenom": prenom,
+                    "email": email,
+                    "mdp": "correct horse battery staple",
+                },
+            ).status_code == 200
+
+        property_response = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Immeuble candidatures",
+                "type": "immeuble",
+                "adresse_ligne1": "1 avenue des Dossiers",
+                "ville": "Lyon",
+            },
+        )
+        property_id = property_response.json()["id"]
+        lot_response = owner.post(
+            f"/api/biens/{property_id}/lots",
+            json={"identifiant": "Lot A", "type": "appartement"},
+        )
+        lot_id = lot_response.json()["id"]
+
+        channel = owner.post(
+            f"/api/biens/{property_id}/canaux-candidatures",
+            json={"lot_id": lot_id, "canal": "leboncoin", "libelle": "Annonce Lot A"},
+        )
+        assert channel.status_code == 201
+        reception_address = channel.json()["adresse_reception"]
+        assert reception_address.endswith("@piaulefiction.fr")
+
+        os.environ["PIAULE_INBOUND_WEBHOOK_TOKEN"] = "test-inbound-token"
+        try:
+            inbound = owner.post(
+                "/api/internal/candidatures/inbound",
+                headers={"x-piaule-inbound-token": "test-inbound-token"},
+                json={
+                    "adresse_reception": reception_address,
+                    "message_id": "provider-message-1",
+                    "expediteur_email": "Alex.Demo@example.test",
+                    "objet": "Candidature pour le T2",
+                    "contenu_texte": "Bonjour, je souhaite visiter le logement.",
+                    "pieces_jointes": ["dossier.pdf", "piece-identite.pdf"],
+                },
+            )
+        finally:
+            os.environ.pop("PIAULE_INBOUND_WEBHOOK_TOKEN", None)
+        assert inbound.status_code == 200
+        inbound_id = inbound.json()["id"]
+        assert inbound.json()["statut"] == "recue"
+        assert inbound.json()["bien_id"] == property_id
+        assert inbound.json()["lot_id"] == lot_id
+
+        assert owner.get("/api/candidatures/inbox").json()[0]["id"] == inbound_id
+
+        created = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "lot_id": lot_id,
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Demo",
+                "candidat_email": "Alex.Demo@example.test",
+                "source": "dossier_facile",
+            },
+        )
+        assert created.status_code == 201
+        application_id = created.json()["id"]
+        assert created.json()["candidat_email"] == "alex.demo@example.test"
+        assert created.json()["bien_id"] == property_id
+        assert created.json()["lot_id"] == lot_id
+        assert created.json()["statut"] == "recue"
+        assert created.json()["doublon_possible"] is False
+
+        duplicate = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "lot_id": lot_id,
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Demo",
+                "candidat_email": "alex.demo@example.test",
+            },
+        )
+        assert duplicate.status_code == 201
+        assert duplicate.json()["doublon_possible"] is True
+        assert owner.get(f"/api/biens/{property_id}/candidatures").json()[0]["doublon_possible"] is True
+
+        updated = owner.put(
+            f"/api/biens/{property_id}/candidatures/{application_id}",
+            json={"statut": "en_verification", "notes_privees": "Pièce d'identité à vérifier."},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["statut"] == "en_verification"
+        assert updated.json()["notes_privees"] == "Pièce d'identité à vérifier."
+        assert len(owner.get("/api/candidatures").json()) == 2
+
+        associated = owner.put(
+            f"/api/candidatures/inbox/{inbound_id}/associer",
+            json={"candidature_id": application_id},
+        )
+        assert associated.status_code == 200
+        assert associated.json()["statut"] == "associee"
+        assert associated.json()["candidature_id"] == application_id
+
+        assert other.get(f"/api/biens/{property_id}/candidatures/{application_id}").status_code == 404
