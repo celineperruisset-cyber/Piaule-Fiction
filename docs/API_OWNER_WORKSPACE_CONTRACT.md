@@ -154,6 +154,25 @@ Le webhook `POST /api/internal/dossier-facile/webhook` met à jour le statut lor
 
 Le connecteur reste désactivé par défaut. DossierFacile exige un partenariat, une charte et des identifiants de préproduction avant les tests ; l’application ne doit donc jamais simuler une validation officielle lorsqu’elle n’est pas connectée.
 
+## États des lieux
+
+Le cycle métier est volontairement séparé : dossier étudié, visite réalisée, candidature retenue, puis état des lieux d'entrée. Le backend prépare l'état des lieux sans confondre la visite avec la remise des clés.
+
+Les routes de la première tranche sont :
+
+- `POST/GET /api/biens/{id}/etats-des-lieux` ;
+- `GET /api/biens/{id}/etats-des-lieux/{edl_id}` ;
+- `POST .../{edl_id}/pieces` ;
+- `POST .../{edl_id}/pieces/{piece_id}/elements` et `PUT .../{entry_id}` ;
+- `POST .../{edl_id}/compteurs` et `POST .../{edl_id}/cles` ;
+- `POST .../{edl_id}/photos` ;
+- `POST .../{edl_id}/verifier` ;
+- `POST .../{edl_id}/preparer-signature`.
+
+Un état des lieux contient son type (`entree`, `sortie`, `intermediaire`), son bien, son lot éventuel, sa candidature et son locataire. Les pièces contiennent les éléments observés, chacun avec une catégorie, un état, une observation et éventuellement une quantité. Les compteurs, clés, photos et empreintes SHA-256 sont conservés séparément. Les photos restent privées et sont stockées hors de la base.
+
+Le moteur de préparation signale les bloquants suivants : aucune pièce, pièce sans élément, élément `non_verifie` et absence de locataire pour un état des lieux d'entrée. Les compteurs, clés et photos manquants sont des avertissements explicites. La route `preparer-signature` ne peut passer à `pret_signature` qu'après résolution des bloquants. Elle ne réalise pas la signature électronique : le verrouillage et l'envoi aux signataires devront passer par un connecteur séparé avec validation humaine et audit.
+
 ## Pièces et complétude d’une candidature
 
 Chaque bien possède une politique de preuve documentaire : `standard`, `renforcee` ou `officielle`. Elle se lit et se modifie avec `GET/PUT /api/biens/{id}/politique-verification`. Elle définit les sources que l'agent peut proposer, mais ne permet pas de demander une pièce interdite par la réglementation. La politique est choisie au niveau du bien et s'applique de la même manière à ses candidatures.

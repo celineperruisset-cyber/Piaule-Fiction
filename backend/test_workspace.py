@@ -1852,3 +1852,129 @@ def test_selected_application_becomes_tenant_and_rejected_application_is_purged(
             f"/api/biens/{property_id}/candidatures/{rejected_id}/pieces"
         ).json() == []
         assert not (main.UPLOAD_DIRECTORY / rejected_filename).exists()
+
+
+def test_inspection_lifecycle_checks_rooms_entries_and_prepares_signature():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        owner = TestClient(main.app)
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "inspection-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert created.status_code == 200
+        workspace_id = created.json()["workspace_id"]
+        property_id = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Appartement état des lieux",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue des pièces",
+                "ville": "Lyon",
+            },
+        ).json()["id"]
+        application = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Retenu",
+                "candidat_email": "alex-inspection@example.test",
+            },
+        )
+        assert application.status_code == 201
+        application_id = application.json()["id"]
+        tenant_id = "locataire-inspection-test"
+        with main._connect() as connection:
+            connection.execute(
+                "UPDATE owner_applications SET statut = 'retenue' WHERE id = ? AND workspace_id = ?",
+                (application_id, workspace_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO owner_tenants(
+                    id, workspace_id, property_id, application_id, prenom, nom, email,
+                    telephone, statut, retenu_le, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'Alex', 'Retenu', 'alex-inspection@example.test', '', 'actif', ?, ?, ?)
+                """,
+                (tenant_id, workspace_id, property_id, application_id, main._iso_now(), main._iso_now(), main._iso_now()),
+            )
+            connection.commit()
+
+        inspection = owner.post(
+            f"/api/biens/{property_id}/etats-des-lieux",
+            json={
+                "type": "entree",
+                "identifiant": "EDL-ENTREE-001",
+                "candidature_id": application_id,
+                "locataire_id": tenant_id,
+            },
+        )
+        assert inspection.status_code == 201
+        inspection_id = inspection.json()["id"]
+        room = owner.post(
+            f"/api/biens/{property_id}/etats-des-lieux/{inspection_id}/pieces",
+            json={"nom": "Séjour"},
+        )
+        assert room.status_code == 201
+        room_id = room.json()["id"]
+        entry = owner.post(
+            f"/api/biens/{property_id}/etats-des-lieux/{inspection_id}/pieces/{room_id}/elements",
+            json={"categorie": "Murs", "libelle": "Peinture", "etat": "non_verifie"},
+        )
+        assert entry.status_code == 201
+        entry_id = entry.json()["id"]
+
+        incomplete = owner.post(f"/api/biens/{property_id}/etats-des-lieux/{inspection_id}/verifier")
+        assert incomplete.status_code == 200
+        assert incomplete.json()["statut"] == "en_cours"
+        assert any("non vérifié" in item for item in incomplete.json()["bloquants"])
+        assert owner.post(
+            f"/api/biens/{property_id}/etats-des-lieux/{inspection_id}/preparer-signature"
+        ).status_code == 409
+
+        updated = owner.put(
+            f"/api/biens/{property_id}/etats-des-lieux/{inspection_id}/pieces/{room_id}/elements/{entry_id}",
+            json={
+                "categorie": "Murs",
+                "libelle": "Peinture",
+                "etat": "bon",
+                "observation": "Aucune dégradation visible.",
+            },
+        )
+        assert updated.status_code == 200
+        assert owner.post(
+            f"/api/biens/{property_id}/etats-des-lieux/{inspection_id}/compteurs",
+            json={"type_compteur": "electricite", "index": "01234", "unite": "kWh"},
+        ).status_code == 201
+        assert owner.post(
+            f"/api/biens/{property_id}/etats-des-lieux/{inspection_id}/cles",
+            json={"type_cle": "Porte d'entrée", "quantite": 2},
+        ).status_code == 201
+        photo = owner.post(
+            f"/api/biens/{property_id}/etats-des-lieux/{inspection_id}/photos",
+            files={"fichier": ("sejour.jpg", b"photo", "image/jpeg")},
+            data={"piece_id": room_id, "entry_id": entry_id, "note": "Vue générale"},
+        )
+        assert photo.status_code == 201
+
+        ready = owner.post(f"/api/biens/{property_id}/etats-des-lieux/{inspection_id}/verifier")
+        assert ready.status_code == 200
+        assert ready.json()["pret_signature"] is True
+        prepared = owner.post(
+            f"/api/biens/{property_id}/etats-des-lieux/{inspection_id}/preparer-signature"
+        )
+        assert prepared.status_code == 200
+        assert prepared.json()["statut"] == "pret_signature"
+        assert len(prepared.json()["rooms"]) == 1
+        assert len(prepared.json()["entries"]) == 1
+        assert len(prepared.json()["media"]) == 1
+        listed = owner.get(f"/api/biens/{property_id}/etats-des-lieux")
+        assert listed.status_code == 200
+        assert listed.json()[0]["id"] == inspection_id

@@ -584,6 +584,114 @@ class PropertyRecord(PropertyRecordCreate):
     updated_at: str
 
 
+InspectionType = Literal["entree", "sortie", "intermediaire"]
+InspectionStatus = Literal[
+    "brouillon", "en_cours", "a_verifier", "pret_signature", "signe", "conteste", "archive"
+]
+InspectionCondition = Literal["non_verifie", "neuf", "tres_bon", "bon", "moyen", "mauvais"]
+
+
+class InspectionCreate(BaseModel):
+    lot_id: str | None = None
+    locataire_id: str | None = None
+    candidature_id: str | None = None
+    type: InspectionType = "entree"
+    identifiant: str = Field(default="", max_length=160)
+    note: str = Field(default="", max_length=3000)
+
+
+class InspectionRoomCreate(BaseModel):
+    nom: str = Field(min_length=1, max_length=120)
+    ordre: int = Field(default=0, ge=0, le=1000)
+
+
+class InspectionRoom(InspectionRoomCreate):
+    id: str
+    etat_des_lieux_id: str
+
+
+class InspectionEntryCreate(BaseModel):
+    categorie: str = Field(min_length=1, max_length=120)
+    libelle: str = Field(min_length=1, max_length=160)
+    etat: InspectionCondition = "non_verifie"
+    observation: str = Field(default="", max_length=2000)
+    quantite: int | None = Field(default=None, ge=0, le=10000)
+
+
+class InspectionEntry(InspectionEntryCreate):
+    id: str
+    etat_des_lieux_id: str
+    piece_id: str
+    updated_at: str
+
+
+class InspectionReadingCreate(BaseModel):
+    type_compteur: Literal["eau", "gaz", "electricite", "chauffage", "autre"]
+    index: str = Field(min_length=1, max_length=120)
+    unite: str = Field(default="", max_length=30)
+    note: str = Field(default="", max_length=1000)
+
+
+class InspectionReading(InspectionReadingCreate):
+    id: str
+    etat_des_lieux_id: str
+
+
+class InspectionKeyCreate(BaseModel):
+    type_cle: str = Field(min_length=1, max_length=120)
+    quantite: int = Field(default=1, ge=0, le=100)
+    note: str = Field(default="", max_length=500)
+
+
+class InspectionKey(InspectionKeyCreate):
+    id: str
+    etat_des_lieux_id: str
+
+
+class InspectionMedia(BaseModel):
+    id: str
+    etat_des_lieux_id: str
+    piece_id: str | None = None
+    entry_id: str | None = None
+    filename: str
+    content_type: str
+    size_bytes: int
+    empreinte_sha256: str
+    captured_at: str
+    note: str
+
+
+class InspectionReadiness(BaseModel):
+    etat_des_lieux_id: str
+    statut: InspectionStatus
+    pret_signature: bool
+    bloquants: list[str]
+    avertissements: list[str]
+    mis_a_jour_le: str
+
+
+class InspectionView(BaseModel):
+    id: str
+    workspace_id: str
+    bien_id: str
+    bien_nom: str
+    lot_id: str | None = None
+    locataire_id: str | None = None
+    candidature_id: str | None = None
+    type: InspectionType
+    identifiant: str
+    statut: InspectionStatus
+    note: str
+    created_at: str
+    updated_at: str
+    rooms: list[InspectionRoom] = Field(default_factory=list)
+    entries: list[InspectionEntry] = Field(default_factory=list)
+    readings: list[InspectionReading] = Field(default_factory=list)
+    keys: list[InspectionKey] = Field(default_factory=list)
+    media: list[InspectionMedia] = Field(default_factory=list)
+    readiness: InspectionReadiness
+
+
 ApplicationStatus = Literal[
     "recue",
     "a_completer",
@@ -1682,6 +1790,96 @@ def _ensure_database() -> None:
             CREATE INDEX IF NOT EXISTS visits_workspace_idx ON visits(workspace_id, created_at);
             CREATE INDEX IF NOT EXISTS visits_application_idx ON visits(application_id, created_at);
             CREATE INDEX IF NOT EXISTS visits_slot_idx ON visits(slot_id, status);
+            CREATE TABLE IF NOT EXISTS inspections (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                lot_id TEXT,
+                tenant_id TEXT,
+                application_id TEXT,
+                inspection_type TEXT NOT NULL DEFAULT 'entree',
+                identifier TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'brouillon',
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                FOREIGN KEY(lot_id) REFERENCES lots(id) ON DELETE SET NULL,
+                FOREIGN KEY(tenant_id) REFERENCES owner_tenants(id) ON DELETE SET NULL,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS inspections_workspace_idx ON inspections(workspace_id, created_at);
+            CREATE INDEX IF NOT EXISTS inspections_property_idx ON inspections(property_id, created_at);
+            CREATE TABLE IF NOT EXISTS inspection_rooms (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                inspection_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(inspection_id, name),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(inspection_id) REFERENCES inspections(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS inspection_rooms_inspection_idx ON inspection_rooms(inspection_id, sort_order);
+            CREATE TABLE IF NOT EXISTS inspection_entries (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                inspection_id TEXT NOT NULL,
+                room_id TEXT NOT NULL,
+                category TEXT NOT NULL,
+                label TEXT NOT NULL,
+                condition TEXT NOT NULL DEFAULT 'non_verifie',
+                observation TEXT NOT NULL DEFAULT '',
+                quantity INTEGER,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(inspection_id) REFERENCES inspections(id) ON DELETE CASCADE,
+                FOREIGN KEY(room_id) REFERENCES inspection_rooms(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS inspection_entries_inspection_idx ON inspection_entries(inspection_id, room_id);
+            CREATE TABLE IF NOT EXISTS inspection_readings (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                inspection_id TEXT NOT NULL,
+                meter_type TEXT NOT NULL,
+                meter_index TEXT NOT NULL,
+                unit TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(inspection_id) REFERENCES inspections(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS inspection_readings_inspection_idx ON inspection_readings(inspection_id);
+            CREATE TABLE IF NOT EXISTS inspection_keys (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                inspection_id TEXT NOT NULL,
+                key_type TEXT NOT NULL,
+                quantity INTEGER NOT NULL DEFAULT 1,
+                note TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(inspection_id) REFERENCES inspections(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS inspection_keys_inspection_idx ON inspection_keys(inspection_id);
+            CREATE TABLE IF NOT EXISTS inspection_media (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                inspection_id TEXT NOT NULL,
+                room_id TEXT,
+                entry_id TEXT,
+                original_filename TEXT NOT NULL,
+                stored_filename TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(inspection_id) REFERENCES inspections(id) ON DELETE CASCADE,
+                FOREIGN KEY(room_id) REFERENCES inspection_rooms(id) ON DELETE SET NULL,
+                FOREIGN KEY(entry_id) REFERENCES inspection_entries(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS inspection_media_inspection_idx ON inspection_media(inspection_id, captured_at);
             CREATE TABLE IF NOT EXISTS calendar_connections (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -3041,6 +3239,143 @@ def _owned_visit_row(
     if row is None:
         raise HTTPException(status_code=404, detail="Visite introuvable dans ce bien.")
     return row
+
+
+def _inspection_query() -> str:
+    return """
+        SELECT i.*, p.nom AS bien_nom
+        FROM inspections i
+        JOIN properties p ON p.id = i.property_id
+    """
+
+
+def _owned_inspection_row(
+    connection: sqlite3.Connection, owner: Candidate, property_id: str, inspection_id: str
+) -> sqlite3.Row:
+    row = connection.execute(
+        _inspection_query()
+        + " WHERE i.id = ? AND i.property_id = ? AND i.workspace_id = ?",
+        (inspection_id, property_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="État des lieux introuvable dans ce bien.")
+    return row
+
+
+def _inspection_readiness(
+    connection: sqlite3.Connection, row: sqlite3.Row
+) -> InspectionReadiness:
+    inspection_id = row["id"]
+    rooms = connection.execute(
+        "SELECT id, name FROM inspection_rooms WHERE inspection_id = ? ORDER BY sort_order, name",
+        (inspection_id,),
+    ).fetchall()
+    entries = connection.execute(
+        "SELECT id, room_id, label, condition FROM inspection_entries WHERE inspection_id = ? ORDER BY room_id, label",
+        (inspection_id,),
+    ).fetchall()
+    readings_count = connection.execute(
+        "SELECT COUNT(*) AS count FROM inspection_readings WHERE inspection_id = ?", (inspection_id,)
+    ).fetchone()["count"]
+    keys_count = connection.execute(
+        "SELECT COUNT(*) AS count FROM inspection_keys WHERE inspection_id = ?", (inspection_id,)
+    ).fetchone()["count"]
+
+    blockers: list[str] = []
+    warnings: list[str] = []
+    if not rooms:
+        blockers.append("Aucune pièce n'est enregistrée.")
+    entry_by_room: dict[str, list[sqlite3.Row]] = {}
+    for entry in entries:
+        entry_by_room.setdefault(entry["room_id"], []).append(entry)
+        if entry["condition"] == "non_verifie":
+            blockers.append(f"Élément non vérifié : {entry['label']}.")
+    for room in rooms:
+        if not entry_by_room.get(room["id"]):
+            blockers.append(f"La pièce « {room['name']} » ne contient aucun élément décrit.")
+    if not readings_count:
+        warnings.append("Aucun relevé de compteur n'est renseigné.")
+    if not keys_count:
+        warnings.append("Aucune clé ou télécommande n'est renseignée.")
+    if not row["tenant_id"]:
+        message = "Le locataire n'est pas encore rattaché à cet état des lieux."
+        if row["inspection_type"] == "entree":
+            blockers.append(message)
+        else:
+            warnings.append(message)
+    if not connection.execute(
+        "SELECT 1 FROM inspection_media WHERE inspection_id = ? LIMIT 1", (inspection_id,)
+    ).fetchone():
+        warnings.append("Aucune photo n'est jointe ; ajoutez-en pour documenter les observations.")
+
+    return InspectionReadiness(
+        etat_des_lieux_id=inspection_id,
+        statut=row["status"],
+        pret_signature=not blockers,
+        bloquants=blockers,
+        avertissements=warnings,
+        mis_a_jour_le=row["updated_at"],
+    )
+
+
+def _inspection_view(connection: sqlite3.Connection, row: sqlite3.Row) -> InspectionView:
+    inspection_id = row["id"]
+    room_rows = connection.execute(
+        "SELECT * FROM inspection_rooms WHERE inspection_id = ? ORDER BY sort_order, name",
+        (inspection_id,),
+    ).fetchall()
+    entry_rows = connection.execute(
+        "SELECT * FROM inspection_entries WHERE inspection_id = ? ORDER BY room_id, label",
+        (inspection_id,),
+    ).fetchall()
+    reading_rows = connection.execute(
+        "SELECT * FROM inspection_readings WHERE inspection_id = ? ORDER BY id",
+        (inspection_id,),
+    ).fetchall()
+    key_rows = connection.execute(
+        "SELECT * FROM inspection_keys WHERE inspection_id = ? ORDER BY id",
+        (inspection_id,),
+    ).fetchall()
+    media_rows = connection.execute(
+        "SELECT * FROM inspection_media WHERE inspection_id = ? ORDER BY captured_at, id",
+        (inspection_id,),
+    ).fetchall()
+    return InspectionView(
+        id=inspection_id,
+        workspace_id=row["workspace_id"],
+        bien_id=row["property_id"],
+        bien_nom=row["bien_nom"],
+        lot_id=row["lot_id"],
+        locataire_id=row["tenant_id"],
+        candidature_id=row["application_id"],
+        type=row["inspection_type"],
+        identifiant=row["identifier"],
+        statut=row["status"],
+        note=row["note"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        rooms=[InspectionRoom(id=item["id"], etat_des_lieux_id=inspection_id, nom=item["name"], ordre=item["sort_order"]) for item in room_rows],
+        entries=[InspectionEntry(
+            id=item["id"], etat_des_lieux_id=inspection_id, piece_id=item["room_id"],
+            categorie=item["category"], libelle=item["label"], etat=item["condition"],
+            observation=item["observation"], quantite=item["quantity"], updated_at=item["updated_at"],
+        ) for item in entry_rows],
+        readings=[InspectionReading(
+            id=item["id"], etat_des_lieux_id=inspection_id, type_compteur=item["meter_type"],
+            index=item["meter_index"], unite=item["unit"], note=item["note"],
+        ) for item in reading_rows],
+        keys=[InspectionKey(
+            id=item["id"], etat_des_lieux_id=inspection_id, type_cle=item["key_type"],
+            quantite=item["quantity"], note=item["note"],
+        ) for item in key_rows],
+        media=[InspectionMedia(
+            id=item["id"], etat_des_lieux_id=inspection_id, piece_id=item["room_id"],
+            entry_id=item["entry_id"], filename=item["original_filename"],
+            content_type=item["content_type"], size_bytes=item["size_bytes"],
+            empreinte_sha256=item["sha256"], captured_at=item["captured_at"], note=item["note"],
+        ) for item in media_rows],
+        readiness=_inspection_readiness(connection, row),
+    )
 
 
 def _active_visit_statuses() -> tuple[str, ...]:
@@ -6604,6 +6939,367 @@ def update_property_verification_policy(
         connection.commit()
         row = _owned_property_row(connection, owner, property_id)
     return _property_verification_policy_from_row(row)
+
+
+@app.post("/api/biens/{property_id}/etats-des-lieux", response_model=InspectionView, status_code=201)
+def create_inspection(
+    property_id: str,
+    payload: InspectionCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> InspectionView:
+    """Start a structured entry, exit or intermediate inspection."""
+
+    inspection_id = f"edl-{uuid4().hex[:16]}"
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        if payload.lot_id and not connection.execute(
+            "SELECT 1 FROM lots WHERE id = ? AND property_id = ? AND workspace_id = ?",
+            (payload.lot_id, property_id, owner.workspace_id),
+        ).fetchone():
+            raise HTTPException(status_code=404, detail="Lot introuvable dans ce bien.")
+        tenant_id = payload.locataire_id
+        if tenant_id and not connection.execute(
+            "SELECT 1 FROM owner_tenants WHERE id = ? AND property_id = ? AND workspace_id = ?",
+            (tenant_id, property_id, owner.workspace_id),
+        ).fetchone():
+            raise HTTPException(status_code=404, detail="Locataire introuvable dans ce bien.")
+        application_id = payload.candidature_id
+        if application_id:
+            application = connection.execute(
+                "SELECT statut FROM owner_applications WHERE id = ? AND property_id = ? AND workspace_id = ?",
+                (application_id, property_id, owner.workspace_id),
+            ).fetchone()
+            if application is None:
+                raise HTTPException(status_code=404, detail="Candidature introuvable dans ce bien.")
+            if payload.type == "entree" and application["statut"] != "retenue":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Un état des lieux d'entrée doit être rattaché à une candidature retenue.",
+                )
+            if tenant_id is None:
+                tenant = connection.execute(
+                    "SELECT id FROM owner_tenants WHERE application_id = ? AND workspace_id = ?",
+                    (application_id, owner.workspace_id),
+                ).fetchone()
+                tenant_id = tenant["id"] if tenant else None
+        connection.execute(
+            """
+            INSERT INTO inspections(
+                id, workspace_id, property_id, lot_id, tenant_id, application_id,
+                inspection_type, identifier, status, note, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'brouillon', ?, ?, ?)
+            """,
+            (
+                inspection_id,
+                owner.workspace_id,
+                property_id,
+                payload.lot_id,
+                tenant_id,
+                application_id,
+                payload.type,
+                _clean_text(payload.identifiant, 160),
+                _clean_text(payload.note, 3000),
+                now,
+                now,
+            ),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="etat_des_lieux_cree",
+            entity_type="etat_des_lieux",
+            entity_id=inspection_id,
+            property_id=property_id,
+            application_id=application_id,
+            metadata={"type": payload.type},
+        )
+        connection.commit()
+        row = _owned_inspection_row(connection, owner, property_id, inspection_id)
+        return _inspection_view(connection, row)
+
+
+@app.get("/api/biens/{property_id}/etats-des-lieux", response_model=list[InspectionView])
+def list_inspections(
+    property_id: str,
+    statut: InspectionStatus | None = None,
+    owner: Candidate = Depends(current_candidate),
+) -> list[InspectionView]:
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        query = _inspection_query() + " WHERE i.property_id = ? AND i.workspace_id = ?"
+        values: list[object] = [property_id, owner.workspace_id]
+        if statut:
+            query += " AND i.status = ?"
+            values.append(statut)
+        query += " ORDER BY i.created_at DESC, i.id"
+        rows = connection.execute(query, values).fetchall()
+        return [_inspection_view(connection, row) for row in rows]
+
+
+@app.get("/api/biens/{property_id}/etats-des-lieux/{inspection_id}", response_model=InspectionView)
+def get_inspection(
+    property_id: str,
+    inspection_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> InspectionView:
+    with closing(_connect()) as connection:
+        row = _owned_inspection_row(connection, owner, property_id, inspection_id)
+        return _inspection_view(connection, row)
+
+
+@app.post("/api/biens/{property_id}/etats-des-lieux/{inspection_id}/pieces", response_model=InspectionRoom, status_code=201)
+def add_inspection_room(
+    property_id: str,
+    inspection_id: str,
+    payload: InspectionRoomCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> InspectionRoom:
+    with closing(_connect()) as connection:
+        inspection = _owned_inspection_row(connection, owner, property_id, inspection_id)
+        room_id = f"edl-piece-{uuid4().hex[:16]}"
+        try:
+            connection.execute(
+                "INSERT INTO inspection_rooms(id, workspace_id, inspection_id, name, sort_order) VALUES (?, ?, ?, ?, ?)",
+                (room_id, owner.workspace_id, inspection_id, _clean_text(payload.nom, 120), payload.ordre),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Cette pièce existe déjà dans l'état des lieux.") from exc
+        connection.execute("UPDATE inspections SET updated_at = ? WHERE id = ?", (_iso_now(), inspection_id))
+        connection.commit()
+        return InspectionRoom(id=room_id, etat_des_lieux_id=inspection["id"], nom=_clean_text(payload.nom, 120), ordre=payload.ordre)
+
+
+def _owned_inspection_room(
+    connection: sqlite3.Connection, owner: Candidate, property_id: str, inspection_id: str, room_id: str
+) -> sqlite3.Row:
+    _owned_inspection_row(connection, owner, property_id, inspection_id)
+    row = connection.execute(
+        "SELECT * FROM inspection_rooms WHERE id = ? AND inspection_id = ? AND workspace_id = ?",
+        (room_id, inspection_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Pièce introuvable dans cet état des lieux.")
+    return row
+
+
+@app.post("/api/biens/{property_id}/etats-des-lieux/{inspection_id}/pieces/{room_id}/elements", response_model=InspectionEntry, status_code=201)
+def add_inspection_entry(
+    property_id: str,
+    inspection_id: str,
+    room_id: str,
+    payload: InspectionEntryCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> InspectionEntry:
+    with closing(_connect()) as connection:
+        _owned_inspection_room(connection, owner, property_id, inspection_id, room_id)
+        entry_id = f"edl-element-{uuid4().hex[:16]}"
+        now = _iso_now()
+        connection.execute(
+            """
+            INSERT INTO inspection_entries(
+                id, workspace_id, inspection_id, room_id, category, label,
+                condition, observation, quantity, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry_id, owner.workspace_id, inspection_id, room_id,
+                _clean_text(payload.categorie, 120), _clean_text(payload.libelle, 160),
+                payload.etat, _clean_text(payload.observation, 2000), payload.quantite, now,
+            ),
+        )
+        connection.execute("UPDATE inspections SET updated_at = ? WHERE id = ?", (now, inspection_id))
+        connection.commit()
+    return InspectionEntry(
+        id=entry_id, etat_des_lieux_id=inspection_id, piece_id=room_id,
+        categorie=_clean_text(payload.categorie, 120), libelle=_clean_text(payload.libelle, 160),
+        etat=payload.etat, observation=_clean_text(payload.observation, 2000),
+        quantite=payload.quantite, updated_at=now,
+    )
+
+
+@app.put("/api/biens/{property_id}/etats-des-lieux/{inspection_id}/pieces/{room_id}/elements/{entry_id}", response_model=InspectionEntry)
+def update_inspection_entry(
+    property_id: str,
+    inspection_id: str,
+    room_id: str,
+    entry_id: str,
+    payload: InspectionEntryCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> InspectionEntry:
+    with closing(_connect()) as connection:
+        _owned_inspection_room(connection, owner, property_id, inspection_id, room_id)
+        existing = connection.execute(
+            "SELECT id FROM inspection_entries WHERE id = ? AND room_id = ? AND inspection_id = ? AND workspace_id = ?",
+            (entry_id, room_id, inspection_id, owner.workspace_id),
+        ).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Élément introuvable dans cette pièce.")
+        now = _iso_now()
+        connection.execute(
+            """
+            UPDATE inspection_entries
+            SET category = ?, label = ?, condition = ?, observation = ?, quantity = ?, updated_at = ?
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (
+                _clean_text(payload.categorie, 120), _clean_text(payload.libelle, 160), payload.etat,
+                _clean_text(payload.observation, 2000), payload.quantite, now, entry_id, owner.workspace_id,
+            ),
+        )
+        connection.execute("UPDATE inspections SET updated_at = ? WHERE id = ?", (now, inspection_id))
+        connection.commit()
+    return InspectionEntry(
+        id=entry_id, etat_des_lieux_id=inspection_id, piece_id=room_id,
+        categorie=_clean_text(payload.categorie, 120), libelle=_clean_text(payload.libelle, 160),
+        etat=payload.etat, observation=_clean_text(payload.observation, 2000),
+        quantite=payload.quantite, updated_at=now,
+    )
+
+
+@app.post("/api/biens/{property_id}/etats-des-lieux/{inspection_id}/compteurs", response_model=InspectionReading, status_code=201)
+def add_inspection_reading(
+    property_id: str,
+    inspection_id: str,
+    payload: InspectionReadingCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> InspectionReading:
+    with closing(_connect()) as connection:
+        _owned_inspection_row(connection, owner, property_id, inspection_id)
+        reading_id = f"edl-compteur-{uuid4().hex[:16]}"
+        connection.execute(
+            "INSERT INTO inspection_readings(id, workspace_id, inspection_id, meter_type, meter_index, unit, note) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (reading_id, owner.workspace_id, inspection_id, payload.type_compteur, _clean_text(payload.index, 120), _clean_text(payload.unite, 30), _clean_text(payload.note, 1000)),
+        )
+        connection.execute("UPDATE inspections SET updated_at = ? WHERE id = ?", (_iso_now(), inspection_id))
+        connection.commit()
+    return InspectionReading(id=reading_id, etat_des_lieux_id=inspection_id, **payload.model_dump())
+
+
+@app.post("/api/biens/{property_id}/etats-des-lieux/{inspection_id}/cles", response_model=InspectionKey, status_code=201)
+def add_inspection_key(
+    property_id: str,
+    inspection_id: str,
+    payload: InspectionKeyCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> InspectionKey:
+    with closing(_connect()) as connection:
+        _owned_inspection_row(connection, owner, property_id, inspection_id)
+        key_id = f"edl-cle-{uuid4().hex[:16]}"
+        connection.execute(
+            "INSERT INTO inspection_keys(id, workspace_id, inspection_id, key_type, quantity, note) VALUES (?, ?, ?, ?, ?, ?)",
+            (key_id, owner.workspace_id, inspection_id, _clean_text(payload.type_cle, 120), payload.quantite, _clean_text(payload.note, 500)),
+        )
+        connection.execute("UPDATE inspections SET updated_at = ? WHERE id = ?", (_iso_now(), inspection_id))
+        connection.commit()
+    return InspectionKey(id=key_id, etat_des_lieux_id=inspection_id, **payload.model_dump())
+
+
+@app.post("/api/biens/{property_id}/etats-des-lieux/{inspection_id}/verifier", response_model=InspectionReadiness)
+def verify_inspection(
+    property_id: str,
+    inspection_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> InspectionReadiness:
+    with closing(_connect()) as connection:
+        row = _owned_inspection_row(connection, owner, property_id, inspection_id)
+        readiness = _inspection_readiness(connection, row)
+        if row["status"] not in {"signe", "archive", "conteste", "pret_signature"}:
+            next_status = "a_verifier" if readiness.pret_signature else "en_cours"
+            connection.execute("UPDATE inspections SET status = ?, updated_at = ? WHERE id = ?", (next_status, _iso_now(), inspection_id))
+            connection.commit()
+            row = _owned_inspection_row(connection, owner, property_id, inspection_id)
+            readiness = _inspection_readiness(connection, row)
+        return readiness
+
+
+@app.post("/api/biens/{property_id}/etats-des-lieux/{inspection_id}/preparer-signature", response_model=InspectionView)
+def prepare_inspection_signature(
+    property_id: str,
+    inspection_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> InspectionView:
+    with closing(_connect()) as connection:
+        row = _owned_inspection_row(connection, owner, property_id, inspection_id)
+        readiness = _inspection_readiness(connection, row)
+        if not readiness.pret_signature:
+            raise HTTPException(status_code=409, detail={"message": "L'état des lieux est incomplet.", "bloquants": readiness.bloquants})
+        now = _iso_now()
+        connection.execute("UPDATE inspections SET status = 'pret_signature', updated_at = ? WHERE id = ?", (now, inspection_id))
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="etat_des_lieux_pret_signature",
+            entity_type="etat_des_lieux",
+            entity_id=inspection_id,
+            property_id=property_id,
+            application_id=row["application_id"],
+            metadata={"bloquants": [], "avertissements": readiness.avertissements},
+        )
+        connection.commit()
+        row = _owned_inspection_row(connection, owner, property_id, inspection_id)
+        return _inspection_view(connection, row)
+
+
+@app.post("/api/biens/{property_id}/etats-des-lieux/{inspection_id}/photos", response_model=InspectionMedia, status_code=201)
+async def add_inspection_photo(
+    property_id: str,
+    inspection_id: str,
+    fichier: UploadFile = File(...),
+    piece_id: str | None = Form(default=None),
+    entry_id: str | None = Form(default=None),
+    note: str = Form(default=""),
+    owner: Candidate = Depends(current_candidate),
+) -> InspectionMedia:
+    with closing(_connect()) as connection:
+        _owned_inspection_row(connection, owner, property_id, inspection_id)
+        if piece_id:
+            _owned_inspection_room(connection, owner, property_id, inspection_id, piece_id)
+        if entry_id and not connection.execute(
+            "SELECT 1 FROM inspection_entries WHERE id = ? AND inspection_id = ? AND workspace_id = ?",
+            (entry_id, inspection_id, owner.workspace_id),
+        ).fetchone():
+            raise HTTPException(status_code=404, detail="Élément introuvable pour cette photo.")
+        content_type = (fichier.content_type or "").lower()
+        if content_type not in {"image/jpeg", "image/png"}:
+            raise HTTPException(status_code=415, detail="Seules les photos JPEG ou PNG sont acceptées.")
+        content = await fichier.read()
+        if len(content) > MAX_DOCUMENT_BYTES:
+            raise HTTPException(status_code=413, detail="La photo dépasse la limite de 100 Mo.")
+        media_id = f"edl-photo-{uuid4().hex[:16]}"
+        stored_filename = f"{media_id}.{'jpg' if content_type == 'image/jpeg' else 'png'}"
+        UPLOAD_DIRECTORY.mkdir(parents=True, exist_ok=True)
+        target = UPLOAD_DIRECTORY / stored_filename
+        target.write_bytes(content)
+        captured_at = _iso_now()
+        digest = hashlib.sha256(content).hexdigest()
+        try:
+            connection.execute(
+                """
+                INSERT INTO inspection_media(
+                    id, workspace_id, inspection_id, room_id, entry_id, original_filename,
+                    stored_filename, content_type, size_bytes, sha256, captured_at, note
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (media_id, owner.workspace_id, inspection_id, piece_id, entry_id,
+                 _clean_text(fichier.filename or "photo", 255), stored_filename, content_type,
+                 len(content), digest, captured_at, _clean_text(note, 1000)),
+            )
+            connection.execute("UPDATE inspections SET updated_at = ? WHERE id = ?", (captured_at, inspection_id))
+            connection.commit()
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+    return InspectionMedia(
+        id=media_id, etat_des_lieux_id=inspection_id, piece_id=piece_id, entry_id=entry_id,
+        filename=_clean_text(fichier.filename or "photo", 255), content_type=content_type,
+        size_bytes=len(content), empreinte_sha256=digest, captured_at=captured_at,
+        note=_clean_text(note, 1000),
+    )
 
 
 @app.get("/api/biens/{property_id}/lots", response_model=list[Lot])

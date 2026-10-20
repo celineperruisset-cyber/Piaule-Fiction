@@ -13,6 +13,7 @@ Cette API devient le socle du workspace propriétaire. Le slice historique compt
 - `publication_connection` pour les comptes de diffusion et leurs autorisations ;
 - `publication_job` pour chaque annonce préparée, validée, publiée ou échouée ;
 - `visit` et disponibilités ;
+- `inspection` / état des lieux avec pièces, éléments observés, compteurs, clés et médias privés ;
 - `connector` avec permissions et révocation.
 
 Le candidat reste un participant du dossier. Les données fictives utilisées par les tests ne doivent jamais être interprétées comme des décisions de solvabilité ou d’authenticité prises par l’IA.
@@ -20,6 +21,23 @@ Le candidat reste un participant du dossier. Les données fictives utilisées pa
 Le domaine biens/lots couvre maintenant la structure du bien, les équipements, les photos, la disponibilité, les types de location, le DPE, les informations de copropriété et les suivis à échéance. Le pipeline de candidatures est rattaché aux biens et aux lots, avec source, statut, notes privées et détection de doublons. Chaque publication peut recevoir une adresse de candidature dédiée ; les e-mails entrants sont placés dans une inbox d’analyse avant association au bon dossier. Les pièces candidates acceptent les PDF/JPG/PNG jusqu’à 100 Mo par fichier. Le moteur de pré-vérification contrôle automatiquement l’intégrité technique, l’expiration, les doublons et les incohérences probables de classement, mais ne certifie jamais l’authenticité d’un document sans preuve officielle ou revue humaine. L’agent peut préparer une relance ciblée pour les pièces manquantes sans pouvoir refuser une candidature. Le cycle de candidature expose maintenant des transitions contrôlées et un historique avec motif, et bloque la proposition de visite tant que le dossier n’est pas complet. Une candidature ne peut être retenue qu’après une visite confirmée puis marquée `terminee` par le propriétaire via `POST /api/biens/{id}/visites/{visit_id}/terminer`. Une candidature retenue est ensuite convertie en fiche locataire durable via `GET /api/locataires` ou `GET /api/biens/{id}/locataires` ; son lien temporaire est révoqué. Une candidature refusée ou retirée reçoit une échéance de purge configurable (`PIAULE_APPLICATION_REJECTED_RETENTION_DAYS`, 90 jours par défaut), puis le worker `POST /api/internal/candidatures/purger` supprime les fichiers et anonymise la trace métier. La plateforme ne gère pas la comptabilité, la fiscalité, le financement ou les tableaux de rentabilité.
 
 Le calendrier de visites expose des créneaux du propriétaire avec fuseau horaire, mode et statut. Une proposition de visite réserve le créneau uniquement pour une candidature complète ; le candidat peut l’accepter ou la refuser depuis son lien temporaire. Les e-mails, SMS et invitations de calendrier restent des actions de connecteur séparées.
+
+## États des lieux
+
+Après une visite effectivement terminée et la sélection de la candidature, le propriétaire peut préparer un état des lieux d'entrée. Le backend conserve un brouillon par bien, avec un éventuel lot, locataire et candidature retenue. Les informations opérationnelles sont séparées en pièces, éléments observés, relevés de compteurs, clés/télécommandes et photos privées. Les photos sont stockées hors de la base, avec empreinte SHA-256 et rattachement facultatif à une pièce ou à un élément.
+
+Les routes sont :
+
+- `POST/GET /api/biens/{id}/etats-des-lieux` pour créer et lister les états des lieux ;
+- `GET /api/biens/{id}/etats-des-lieux/{edl_id}` pour charger le dossier complet ;
+- `POST .../{edl_id}/pieces` pour ajouter une pièce ;
+- `POST .../{edl_id}/pieces/{piece_id}/elements` et `PUT .../{entry_id}` pour décrire puis corriger les éléments observés ;
+- `POST .../{edl_id}/compteurs` et `POST .../{edl_id}/cles` pour les relevés et la remise des clés ;
+- `POST .../{edl_id}/photos` pour déposer une photo JPEG/PNG de 100 Mo maximum ;
+- `POST .../{edl_id}/verifier` pour calculer les bloquants et avertissements ;
+- `POST .../{edl_id}/preparer-signature` pour passer à `pret_signature` lorsque chaque pièce comporte au moins un élément vérifié et que le locataire est rattaché.
+
+Le contrôle est explicable : il bloque une pièce sans élément, un élément encore `non_verifie` et, pour un état des lieux d'entrée, l'absence de locataire. Les compteurs, clés et photos sont signalés comme avertissements afin de laisser le propriétaire décider selon le logement. La signature électronique, le verrouillage juridique et l'envoi aux signataires restent une étape de connecteur séparée ; cette API ne prétend pas signer ni certifier le document.
 
 La stratégie complète de confiance documentaire est décrite dans [`docs/DOCUMENT_VERIFICATION_AND_FRAUD.md`](../docs/DOCUMENT_VERIFICATION_AND_FRAUD.md). Elle sépare la complétude, les contrôles techniques, les comparaisons entre pièces, les preuves officielles et la revue humaine. La vérification fiscale doit s'appuyer sur le service officiel de vérification des avis ou le code 2D-Doc, sous réserve d'un parcours automatisé autorisé ; l'API Particulier est soumise à habilitation et n'est pas présumée accessible à Piaule Fiction. Chaque bien possède aussi une politique `standard`, `renforcee` ou `officielle`, configurable via `/api/biens/{id}/politique-verification`. Les demandes de preuve externe sont consenties par le candidat et reçoivent le résultat d'un futur connecteur via `/api/internal/verifications/{request_id}/result`.
 
