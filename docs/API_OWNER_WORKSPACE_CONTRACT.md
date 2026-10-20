@@ -83,7 +83,7 @@ Les pièces sont rattachées à la candidature, au bien et au workspace. Les cin
 Les routes sont :
 
 - `GET /api/biens/{id}/candidatures/{application_id}/pieces` pour lister les pièces privées ;
-- `POST /api/biens/{id}/candidatures/{application_id}/pieces` pour déposer un PDF, JPG ou PNG de 10 Mo maximum ;
+- `POST /api/biens/{id}/candidatures/{application_id}/pieces` pour déposer un PDF, JPG ou PNG de 100 Mo maximum par fichier ;
 - `PUT /api/biens/{id}/candidatures/{application_id}/pieces/{document_id}/verification` pour changer le statut de vérification ;
 - `GET /api/biens/{id}/candidatures/{application_id}/completude` pour lire le résultat ;
 - `POST /api/biens/{id}/candidatures/{application_id}/verifier` pour recalculer et synchroniser le statut de la candidature.

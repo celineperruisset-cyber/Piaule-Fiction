@@ -69,7 +69,7 @@ DATABASE_PATH = Path(
     os.getenv("PIAULE_DATABASE_PATH", str(STATE_DIRECTORY / "piaule-fiction.sqlite3"))
 )
 UPLOAD_DIRECTORY = Path(os.getenv("PIAULE_UPLOAD_DIRECTORY", str(STATE_DIRECTORY / "uploads")))
-MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+MAX_DOCUMENT_BYTES = 100 * 1024 * 1024
 ALLOWED_DOCUMENT_TYPES = {
     "pdf": {"application/pdf"},
     "jpg": {"image/jpeg"},
@@ -3318,7 +3318,7 @@ async def candidate_portal_upload_document(
         raise HTTPException(status_code=415, detail="Format accepté : PDF, JPG ou PNG.")
     content = await file.read(MAX_DOCUMENT_BYTES + 1)
     if len(content) > MAX_DOCUMENT_BYTES:
-        raise HTTPException(status_code=413, detail="La pièce ne doit pas dépasser 10 Mo.")
+        raise HTTPException(status_code=413, detail="La pièce ne doit pas dépasser 100 Mo.")
     document_id = f"application-doc-{uuid4().hex}"
     stored_filename = f"{document_id}.{extension}"
     original_filename = _clean_text(file.filename or f"piece.{extension}", 180)
@@ -3496,7 +3496,7 @@ async def upload_application_document(
         raise HTTPException(status_code=415, detail="Format accepté : PDF, JPG ou PNG.")
     content = await file.read(MAX_DOCUMENT_BYTES + 1)
     if len(content) > MAX_DOCUMENT_BYTES:
-        raise HTTPException(status_code=413, detail="La pièce ne doit pas dépasser 10 Mo.")
+        raise HTTPException(status_code=413, detail="La pièce ne doit pas dépasser 100 Mo.")
 
     document_id = f"application-doc-{uuid4().hex}"
     stored_filename = f"{document_id}.{extension}"
