@@ -62,7 +62,7 @@ CANDIDATE_PORTAL_BASE_URL = os.getenv(
     "PIAULE_CANDIDATE_PORTAL_BASE_URL",
     "http://127.0.0.1:5173/candidature.html",
 ).strip()
-CANDIDATE_LINK_SECONDS = 7 * 24 * 60 * 60
+CANDIDATE_LINK_SECONDS = 30 * 24 * 60 * 60
 
 STATE_DIRECTORY = Path(os.getenv("PIAULE_STATE_DIRECTORY", ".local-state"))
 DATABASE_PATH = Path(

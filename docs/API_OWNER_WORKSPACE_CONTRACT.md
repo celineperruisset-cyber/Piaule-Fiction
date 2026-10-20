@@ -96,7 +96,7 @@ Le dépôt exposé dans cette première tranche est protégé par la session pro
 
 ## Échange avec le candidat
 
-Le propriétaire peut créer un lien temporaire avec `POST /api/biens/{id}/candidatures/{application_id}/lien-candidat`. La réponse contient une URL à insérer dans l’e-mail envoyé au candidat. Le jeton brut n’est jamais stocké en base : seul son hash est conservé, avec une expiration de sept jours et une révocation des anciens liens lors de la création d’un nouveau lien.
+Le propriétaire peut créer un lien temporaire avec `POST /api/biens/{id}/candidatures/{application_id}/lien-candidat`. La réponse contient une URL à insérer dans l’e-mail envoyé au candidat. Le jeton brut n’est jamais stocké en base : seul son hash est conservé, avec une expiration de trente jours et une révocation des anciens liens lors de la création d’un nouveau lien.
 
 Le portail candidat expose uniquement :
 
