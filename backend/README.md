@@ -24,6 +24,8 @@ Le calendrier de visites expose des créneaux du propriétaire avec fuseau horai
 
 `GET /api/dashboard` fournit la synthèse de l'accueil du propriétaire en une réponse : compteurs des biens, candidatures par statut, dossiers incomplets, documents présentant des anomalies, visites à venir, états des lieux actifs, actions à valider et huit dernières missions d'agents. La requête reste filtrée par le workspace de la session ; elle ne remplace pas les routes détaillées utilisées lorsqu'un écran est ouvert.
 
+Pour les portefeuilles importants, `GET /api/candidatures-page` et `GET /api/biens/{id}/candidatures-page` renvoient une liste paginée avec `total`, `page`, `page_size` et `pages`. Les paramètres `search`, `statut`, `source` et `sort=recent|nom` servent aux filtres du tableau frontend sans charger tous les dossiers en mémoire.
+
 ## États des lieux
 
 Après une visite effectivement terminée et la sélection de la candidature, le propriétaire peut préparer un état des lieux d'entrée. Le backend conserve un brouillon par bien, avec un éventuel lot, locataire et candidature retenue. Les informations opérationnelles sont séparées en pièces, éléments observés, relevés de compteurs, clés/télécommandes et photos privées. Les photos sont stockées hors de la base, avec empreinte SHA-256 et rattachement facultatif à une pièce ou à un élément.

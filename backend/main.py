@@ -34,7 +34,7 @@ from urllib.parse import urlencode
 from urllib.request import Request as URLRequest, urlopen
 from uuid import uuid4
 
-from fastapi import Body, Cookie, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi import Body, Cookie, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -822,6 +822,14 @@ class OwnerApplication(BaseModel):
     anonymisee_le: str | None = None
     recue_le: str
     updated_at: str
+
+
+class OwnerApplicationPage(BaseModel):
+    items: list[OwnerApplication]
+    total: int
+    page: int
+    page_size: int
+    pages: int
 
 
 TenantStatus = Literal["actif", "archive"]
@@ -3437,6 +3445,55 @@ def _owned_application_row(
     if row is None:
         raise HTTPException(status_code=404, detail="Candidature introuvable dans ce workspace.")
     return row
+
+
+def _application_page(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    property_id: str | None,
+    search: str,
+    statut: str | None,
+    source: str | None,
+    page: int,
+    page_size: int,
+    sort: str,
+) -> OwnerApplicationPage:
+    clauses = ["a.workspace_id = ?"]
+    values: list[object] = [workspace_id]
+    if property_id:
+        clauses.append("a.property_id = ?")
+        values.append(property_id)
+    if search:
+        clauses.append(
+            "(LOWER(a.candidat_prenom || ' ' || a.candidat_nom) LIKE ? OR LOWER(a.candidat_email) LIKE ? OR LOWER(a.reference_source) LIKE ?)"
+        )
+        search_value = f"%{search.lower()}%"
+        values.extend([search_value, search_value, search_value])
+    if statut:
+        clauses.append("a.statut = ?")
+        values.append(statut)
+    if source:
+        clauses.append("a.source = ?")
+        values.append(source)
+    where = " WHERE " + " AND ".join(clauses)
+    total = connection.execute(
+        "SELECT COUNT(*) AS count FROM owner_applications a" + where,
+        values,
+    ).fetchone()["count"]
+    order_by = "LOWER(a.candidat_nom), LOWER(a.candidat_prenom), a.id" if sort == "nom" else "a.recue_le DESC, a.id"
+    offset = (page - 1) * page_size
+    rows = connection.execute(
+        _application_query() + where + f" ORDER BY {order_by} LIMIT ? OFFSET ?",
+        [*values, page_size, offset],
+    ).fetchall()
+    return OwnerApplicationPage(
+        items=[_application_from_row(row) for row in rows],
+        total=int(total),
+        page=page,
+        page_size=page_size,
+        pages=(int(total) + page_size - 1) // page_size,
+    )
 
 
 def _tenant_query() -> str:
@@ -8062,6 +8119,32 @@ def list_all_applications(owner: Candidate = Depends(current_candidate)) -> list
     return [_application_from_row(row) for row in rows]
 
 
+@app.get("/api/candidatures-page", response_model=OwnerApplicationPage)
+def search_all_applications(
+    search: str = Query(default="", max_length=120),
+    statut: ApplicationStatus | None = None,
+    source: str | None = Query(default=None, max_length=40),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    sort: Literal["recent", "nom"] = "recent",
+    owner: Candidate = Depends(current_candidate),
+) -> OwnerApplicationPage:
+    """Search the portfolio pipeline without loading every application at once."""
+
+    with closing(_connect()) as connection:
+        return _application_page(
+            connection,
+            workspace_id=owner.workspace_id,
+            property_id=None,
+            search=_clean_text(search, 120),
+            statut=statut,
+            source=_clean_text(source, 40) if source else None,
+            page=page,
+            page_size=page_size,
+            sort=sort,
+        )
+
+
 @app.get("/api/locataires", response_model=list[OwnerTenant])
 def list_all_tenants(owner: Candidate = Depends(current_candidate)) -> list[OwnerTenant]:
     """List durable tenant records for the current owner's workspace."""
@@ -9985,6 +10068,34 @@ def list_property_applications(
             (property_id, owner.workspace_id),
         ).fetchall()
     return [_application_from_row(row) for row in rows]
+
+
+@app.get("/api/biens/{property_id}/candidatures-page", response_model=OwnerApplicationPage)
+def search_property_applications(
+    property_id: str,
+    search: str = Query(default="", max_length=120),
+    statut: ApplicationStatus | None = None,
+    source: str | None = Query(default=None, max_length=40),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    sort: Literal["recent", "nom"] = "recent",
+    owner: Candidate = Depends(current_candidate),
+) -> OwnerApplicationPage:
+    """Search one property's application pipeline with stable pagination."""
+
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        return _application_page(
+            connection,
+            workspace_id=owner.workspace_id,
+            property_id=property_id,
+            search=_clean_text(search, 120),
+            statut=statut,
+            source=_clean_text(source, 40) if source else None,
+            page=page,
+            page_size=page_size,
+            sort=sort,
+        )
 
 
 @app.post("/api/biens/{property_id}/candidatures", response_model=OwnerApplication, status_code=201)

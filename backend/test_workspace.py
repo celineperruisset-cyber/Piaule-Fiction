@@ -2077,3 +2077,68 @@ def test_dashboard_summary_is_workspace_scoped_and_aggregates_owner_activity():
         assert other_data["candidatures"]["total"] == 0
         assert other_data["actions_en_attente"] == 0
         assert other_data["activite_agents"] == []
+
+
+def test_application_search_supports_filters_pagination_and_workspace_isolation():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        owner = TestClient(main.app)
+        other = TestClient(main.app)
+        first = owner.post(
+            "/api/compte",
+            json={"action": "creer", "prenom": "Owner", "email": "pagination-owner@example.test", "mdp": "correct horse battery staple"},
+        )
+        second = other.post(
+            "/api/compte",
+            json={"action": "creer", "prenom": "Other", "email": "pagination-other@example.test", "mdp": "correct horse battery staple"},
+        )
+        assert first.status_code == 200
+        assert second.status_code == 200
+        property_id = owner.post(
+            "/api/biens",
+            json={"nom": "Bien pagination", "type": "appartement", "adresse_ligne1": "1 rue recherche", "ville": "Lyon"},
+        ).json()["id"]
+        for prenom, nom, statut, source in [
+            ("Zoé", "Martin", "recue", "email"),
+            ("Alex", "Bernard", "a_completer", "import"),
+            ("Sam", "Durand", "prete", "email"),
+        ]:
+            created = owner.post(
+                f"/api/biens/{property_id}/candidatures",
+                json={
+                    "candidat_prenom": prenom,
+                    "candidat_nom": nom,
+                    "candidat_email": f"{prenom.lower()}@example.test",
+                    "statut": statut,
+                    "source": source,
+                },
+            )
+            assert created.status_code == 201
+
+        page = owner.get("/api/candidatures-page", params={"page": 2, "page_size": 2})
+        assert page.status_code == 200
+        assert page.json()["total"] == 3
+        assert page.json()["pages"] == 2
+        assert page.json()["page"] == 2
+        assert len(page.json()["items"]) == 1
+
+        filtered = owner.get(
+            f"/api/biens/{property_id}/candidatures-page",
+            params={"statut": "a_completer", "source": "import", "search": "alex", "page_size": 10},
+        )
+        assert filtered.status_code == 200
+        assert filtered.json()["total"] == 1
+        assert filtered.json()["items"][0]["candidat_nom"] == "Bernard"
+
+        by_name = owner.get(
+            f"/api/biens/{property_id}/candidatures-page",
+            params={"sort": "nom", "page_size": 10},
+        )
+        assert [item["candidat_nom"] for item in by_name.json()["items"]] == ["Bernard", "Durand", "Martin"]
+
+        other_page = other.get("/api/candidatures-page")
+        assert other_page.status_code == 200
+        assert other_page.json()["total"] == 0
+        assert other_page.json()["items"] == []
