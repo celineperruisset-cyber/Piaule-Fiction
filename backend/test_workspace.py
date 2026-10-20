@@ -1773,6 +1773,19 @@ def test_selected_application_becomes_tenant_and_rejected_application_is_purged(
             f"/api/biens/{property_id}/candidatures/{application_id}"
         ).json()["statut"] == "visite_confirmee"
 
+        before_visit = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/statut",
+            json={"statut": "retenue"},
+        )
+        assert before_visit.status_code == 409
+
+        completed_visit = owner.post(
+            f"/api/biens/{property_id}/visites/{proposed_visit.json()['id']}/terminer",
+            json={"note": "Visite réalisée, logement présenté au candidat."},
+        )
+        assert completed_visit.status_code == 200
+        assert completed_visit.json()["statut"] == "terminee"
+
         selected = owner.post(
             f"/api/biens/{property_id}/candidatures/{application_id}/statut",
             json={"statut": "retenue", "motif": "Dossier sélectionné par le propriétaire."},

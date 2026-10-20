@@ -776,6 +776,10 @@ class VisitCancelRequest(BaseModel):
     motif: str = Field(default="", max_length=500)
 
 
+class VisitCompleteRequest(BaseModel):
+    note: str = Field(default="", max_length=1000)
+
+
 class CandidateVisit(BaseModel):
     id: str
     bien_nom: str
@@ -3355,6 +3359,20 @@ def _set_application_status(
             raise HTTPException(
                 status_code=409,
                 detail="Cette candidature doit être complète avant de passer à cette étape.",
+            )
+    if new_status == "retenue":
+        completed_visit = connection.execute(
+            """
+            SELECT 1 FROM visits
+            WHERE workspace_id = ? AND application_id = ? AND status = 'terminee'
+            LIMIT 1
+            """,
+            (workspace_id, application_id),
+        ).fetchone()
+        if completed_visit is None:
+            raise HTTPException(
+                status_code=409,
+                detail="La visite de l'appartement doit être terminée avant de retenir cette candidature.",
             )
     clean_reason = _clean_text(reason, 1000)
     connection.execute(
@@ -7139,6 +7157,38 @@ def cancel_property_visit(
                 source="proprietaire",
                 reason=reason,
             )
+        connection.commit()
+        updated = _owned_visit_row(connection, owner, property_id, visit_id)
+    return _visit_from_row(updated)
+
+
+@app.post("/api/biens/{property_id}/visites/{visit_id}/terminer", response_model=Visit)
+def complete_property_visit(
+    property_id: str,
+    visit_id: str,
+    payload: VisitCompleteRequest,
+    owner: Candidate = Depends(current_candidate),
+) -> Visit:
+    """Mark the physical or video viewing as completed by the owner."""
+
+    with closing(_connect()) as connection:
+        row = _owned_visit_row(connection, owner, property_id, visit_id)
+        if row["status"] == "terminee":
+            return _visit_from_row(row)
+        if row["status"] != "confirmee":
+            raise HTTPException(
+                status_code=409,
+                detail="Seule une visite confirmée peut être marquée comme terminée.",
+            )
+        note = _clean_text(payload.note, 1000)
+        connection.execute(
+            """
+            UPDATE visits
+            SET status = 'terminee', reason = ?, updated_at = datetime('now')
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (note or "Visite réalisée.", visit_id, owner.workspace_id),
+        )
         connection.commit()
         updated = _owned_visit_row(connection, owner, property_id, visit_id)
     return _visit_from_row(updated)
