@@ -10,6 +10,7 @@ Cette API devient le socle du workspace propriétaire. Le slice historique compt
 - `document` avec statut, provenance et accès ;
 - `agent_run`, `action`, `approval` et `audit_event` ;
 - `workspace_agent` et `agent_message` pour l'équipe privée du propriétaire ;
+- `publication_connection` pour les comptes de diffusion et leurs autorisations ;
 - `visit` et disponibilités ;
 - `connector` avec permissions et révocation.
 
@@ -37,6 +38,14 @@ La connexion Google utilise OpenID Connect avec les scopes `openid email profile
 À la création d'un compte classique ou Google, le backend provisionne automatiquement une équipe privée dans le workspace du propriétaire. Le catalogue initial comprend l'Orchestrateur, Bien, Candidatures, Complétude, Confiance, Comparaison, Visites, Communication, Conformité et Suivi. Ces instances ont des identifiants propres au workspace ; elles ne partagent ni messages, ni missions, ni données avec un autre propriétaire.
 
 Le propriétaire peut afficher son équipe avec `GET /api/agents`. L'Orchestrateur est le point de contact principal : `POST /api/agents/orchestrateur/messages` enregistre une demande, crée une mission `queued` et ajoute un événement d'audit. `GET /api/agents/orchestrateur/messages` relit l'échange. Le worker devra ensuite prendre la mission, produire une réponse et mettre à jour le message ; ce branchement n'est pas simulé par l'API.
+
+## Diffusion des annonces
+
+L'Agent Diffusion est provisionné dans l'équipe. Les comptes de publication sont enregistrés avec `POST /api/diffusion/connexions` et consultables avec `GET /api/diffusion/connexions`. Une connexion reste `a_connecter` jusqu'à ce qu'un connecteur officiel termine son OAuth ou son activation partenaire via `POST /api/internal/diffusion/connexions/{id}/activer`.
+
+La première publication doit être proposée comme une action `publier_annonce`, validée par le propriétaire puis exécutée par le connecteur. L'exécution marque la première publication comme validée. Seulement après cette étape, le propriétaire peut appeler `POST /api/diffusion/connexions/{id}/autoriser-automatique`. Il peut revenir à une validation systématique avec `.../desactiver-automatique` ou révoquer complètement la connexion avec `.../revoquer`.
+
+Le backend ne stocke pas de mot de passe et n'appelle encore aucune plateforme réelle. Les références de compte reçues par le canal interne sont conservées sous forme d'empreinte. Toute publication doit utiliser un connecteur autorisé, une action auditée et les permissions de la plateforme concernée.
 
 Les visites utilisent actuellement les routes `/api/biens/{id}/visite-creneaux`, `/api/biens/{id}/visites` et `/api/biens/{id}/candidatures/{application_id}/visites/proposer`. Le portail candidat répond via `/api/candidature-acces/{token}/visites/{visit_id}/reponse`. Aucun calendrier externe n’est appelé par ces routes.
 

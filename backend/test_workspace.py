@@ -88,7 +88,7 @@ def test_owner_gets_private_agent_team_and_can_contact_orchestrator():
         second_agents = second.get("/api/agents")
         assert first_agents.status_code == 200
         assert second_agents.status_code == 200
-        assert len(first_agents.json()) == len(main.OWNER_AGENT_CATALOG) == 10
+        assert len(first_agents.json()) == len(main.OWNER_AGENT_CATALOG) == 11
         assert {agent["role"] for agent in first_agents.json()} == set(main.OWNER_AGENT_CATALOG)
         assert [agent["nom"] for agent in first_agents.json()][0] == "Orchestrateur"
         assert {agent["workspace_id"] for agent in first_agents.json()} == {
@@ -128,6 +128,87 @@ def test_owner_gets_private_agent_team_and_can_contact_orchestrator():
         )
         assert audit.status_code == 200
         assert audit.json()[0]["evenement"] == "demande_orchestrateur_recue"
+
+
+def test_publication_auto_requires_first_approved_publication_and_can_be_revoked():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.AGENT_INTERNAL_TOKEN = "agent-test-token"
+        owner = TestClient(main.app)
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "publication-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert created.status_code == 200
+
+        connection = owner.post(
+            "/api/diffusion/connexions",
+            json={"plateforme": "leboncoin", "compte_libelle": "Compte propriétaire"},
+        )
+        assert connection.status_code == 201
+        connection_id = connection.json()["id"]
+        assert connection.json()["statut"] == "a_connecter"
+        assert owner.post(f"/api/diffusion/connexions/{connection_id}/autoriser-automatique").status_code == 409
+
+        activated = owner.post(
+            f"/api/internal/diffusion/connexions/{connection_id}/activer",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={"reference_compte": "provider-account-ref"},
+        )
+        assert activated.status_code == 200
+        workspace_id = created.json()["workspace_id"]
+        run = owner.post(
+            "/api/internal/agent-runs",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={
+                "workspace_id": workspace_id,
+                "type_agent": "agent-diffusion",
+                "mission": "Publier la première annonce validée",
+            },
+        )
+        assert run.status_code == 201
+        action = owner.post(
+            "/api/internal/actions",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={
+                "workspace_id": workspace_id,
+                "agent_run_id": run.json()["id"],
+                "type_action": "publier_annonce",
+                "libelle": "Publier la première annonce",
+                "niveau_risque": "transmission",
+                "payload": {
+                    "connection_id": connection_id,
+                    "premiere_publication": True,
+                },
+                "idempotency_key": "first-publication-001",
+            },
+        )
+        assert action.status_code == 201
+        action_id = action.json()["id"]
+        assert owner.post(f"/api/actions/{action_id}/approve", json={}).status_code == 200
+        executed = owner.post(
+            f"/api/internal/actions/{action_id}/execute",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={"reference_execution": "provider-publication-1", "resultat": {"publiee": True}},
+        )
+        assert executed.status_code == 200
+
+        automatic = owner.post(f"/api/diffusion/connexions/{connection_id}/autoriser-automatique")
+        assert automatic.status_code == 200
+        assert automatic.json()["mode_publication"] == "automatique"
+        assert automatic.json()["premiere_publication_validee_le"]
+
+        revoked = owner.post(f"/api/diffusion/connexions/{connection_id}/revoquer")
+        assert revoked.status_code == 200
+        assert revoked.json()["statut"] == "revoquee"
+        assert revoked.json()["mode_publication"] == "validation_a_chaque_fois"
 
 
 def test_verification_policy_and_external_proof_are_consent_gated():

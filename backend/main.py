@@ -155,6 +155,7 @@ ActionDecision = Literal["autorisee", "refusee"]
 AGENT_SCOPE_POLICIES: dict[str, set[str]] = {
     "orchestrateur": {"distribuer_mission", "preparer_plan"},
     "agent-bien": {"analyser_bien", "preparer_annonce"},
+    "agent-diffusion": {"preparer_publication", "publier_annonce", "retirer_annonce"},
     "agent-candidatures": {"analyser_candidature", "rattacher_candidature", "dedoublonner_candidature"},
     "agent-completude": {
         "analyser_piece",
@@ -184,6 +185,12 @@ OWNER_AGENT_CATALOG: dict[str, dict[str, object]] = {
         "nom": "Agent Bien",
         "description": "Structure les biens, lots et informations manquantes.",
         "mission": "Préparer une fiche bien exploitable et relever les champs à compléter.",
+        "principal": False,
+    },
+    "agent-diffusion": {
+        "nom": "Agent Diffusion",
+        "description": "Prépare, publie et suit les annonces sur les canaux autorisés.",
+        "mission": "Adapter l'annonce à chaque plateforme et respecter les validations du propriétaire.",
         "principal": False,
     },
     "agent-candidatures": {
@@ -699,6 +706,42 @@ class ApplicationChannel(ApplicationChannelCreate):
     adresse_reception: str
     actif: bool = True
     created_at: str
+
+
+PublicationPlatform = Literal[
+    "leboncoin",
+    "seloger",
+    "pap",
+    "bienici",
+    "site_agence",
+    "site_proprietaire",
+    "autre",
+]
+PublicationConnectionStatus = Literal["a_connecter", "active", "revoquee", "bloquee"]
+PublicationMode = Literal["validation_a_chaque_fois", "automatique"]
+
+
+class PublicationConnectionCreate(BaseModel):
+    plateforme: PublicationPlatform
+    compte_libelle: str = Field(min_length=2, max_length=160)
+
+
+class PublicationConnection(PublicationConnectionCreate):
+    id: str
+    workspace_id: str
+    statut: PublicationConnectionStatus
+    mode_publication: PublicationMode
+    premiere_publication_validee_le: str | None = None
+    premiere_publication_action_id: str | None = None
+    autorisation_automatique_le: str | None = None
+    autorisation_automatique_par: str | None = None
+    revoquee_le: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class InternalPublicationConnectionActivation(BaseModel):
+    reference_compte: str = Field(default="", max_length=500)
 
 
 class InboundApplicationEmail(BaseModel):
@@ -1487,6 +1530,27 @@ def _ensure_database() -> None:
                 ON agent_messages(workspace_id, created_at);
             CREATE INDEX IF NOT EXISTS agent_messages_agent_idx
                 ON agent_messages(agent_id, created_at);
+            CREATE TABLE IF NOT EXISTS publication_connections (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                account_label TEXT NOT NULL,
+                external_account_ref_hash TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'a_connecter',
+                publication_mode TEXT NOT NULL DEFAULT 'validation_a_chaque_fois',
+                first_publication_validated_at TEXT,
+                first_publication_action_id TEXT,
+                auto_authorized_at TEXT,
+                auto_authorized_by TEXT,
+                revoked_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(workspace_id, platform, account_label),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(first_publication_action_id) REFERENCES actions(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS publication_connections_workspace_idx
+                ON publication_connections(workspace_id, created_at);
             CREATE TABLE IF NOT EXISTS actions (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -2180,6 +2244,36 @@ def _owner_agent_message_from_row(row: sqlite3.Row) -> OwnerAgentMessage:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _publication_connection_from_row(row: sqlite3.Row) -> PublicationConnection:
+    return PublicationConnection(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        plateforme=row["platform"],
+        compte_libelle=row["account_label"],
+        statut=row["status"],
+        mode_publication=row["publication_mode"],
+        premiere_publication_validee_le=row["first_publication_validated_at"],
+        premiere_publication_action_id=row["first_publication_action_id"],
+        autorisation_automatique_le=row["auto_authorized_at"],
+        autorisation_automatique_par=row["auto_authorized_by"],
+        revoquee_le=row["revoked_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _owned_publication_connection_row(
+    connection: sqlite3.Connection, owner: Candidate, connection_id: str
+) -> sqlite3.Row:
+    row = connection.execute(
+        "SELECT * FROM publication_connections WHERE id = ? AND workspace_id = ?",
+        (connection_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Connexion de diffusion introuvable dans ce workspace.")
+    return row
 
 
 def _google_is_configured() -> bool:
@@ -4074,6 +4168,223 @@ def get_owner_agent(agent_id: str, owner: Candidate = Depends(current_candidate)
     return _owner_agent_from_row(row)
 
 
+@app.get("/api/diffusion/connexions", response_model=list[PublicationConnection])
+def list_publication_connections(
+    owner: Candidate = Depends(current_candidate),
+) -> list[PublicationConnection]:
+    """List the owner's authorized or pending publication accounts."""
+
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM publication_connections
+            WHERE workspace_id = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (owner.workspace_id,),
+        ).fetchall()
+    return [_publication_connection_from_row(row) for row in rows]
+
+
+@app.post("/api/diffusion/connexions", response_model=PublicationConnection, status_code=201)
+def create_publication_connection(
+    payload: PublicationConnectionCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> PublicationConnection:
+    """Register a platform account before its official connector is activated."""
+
+    label = _clean_text(payload.compte_libelle, 160)
+    if len(label) < 2:
+        raise HTTPException(status_code=422, detail="Le nom du compte de diffusion est trop court.")
+    connection_id = f"publication-connection-{uuid4().hex[:16]}"
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        existing = connection.execute(
+            """
+            SELECT id FROM publication_connections
+            WHERE workspace_id = ? AND platform = ? AND account_label = ?
+            """,
+            (owner.workspace_id, payload.plateforme, label),
+        ).fetchone()
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="Ce compte de diffusion est déjà enregistré.")
+        connection.execute(
+            """
+            INSERT INTO publication_connections(
+                id, workspace_id, platform, account_label, status,
+                publication_mode, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'a_connecter', 'validation_a_chaque_fois', ?, ?)
+            """,
+            (connection_id, owner.workspace_id, payload.plateforme, label, now, now),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="connexion_diffusion_preparee",
+            entity_type="publication_connection",
+            entity_id=connection_id,
+            metadata={"plateforme": payload.plateforme, "compte_libelle": label},
+        )
+        connection.commit()
+        row = _owned_publication_connection_row(connection, owner, connection_id)
+    return _publication_connection_from_row(row)
+
+
+@app.post("/api/diffusion/connexions/{connection_id}/autoriser-automatique", response_model=PublicationConnection)
+def authorize_automatic_publication(
+    connection_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> PublicationConnection:
+    """Enable future automatic publication only after a first owner-approved publication."""
+
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        row = _owned_publication_connection_row(connection, owner, connection_id)
+        if row["status"] != "active":
+            raise HTTPException(status_code=409, detail="Le compte de diffusion n'est pas actif.")
+        if not row["first_publication_validated_at"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Une première publication validée par le propriétaire est requise.",
+            )
+        connection.execute(
+            """
+            UPDATE publication_connections
+            SET publication_mode = 'automatique', auto_authorized_at = ?,
+                auto_authorized_by = ?, revoked_at = NULL, updated_at = ?
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (now, owner.email, now, connection_id, owner.workspace_id),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="publication_automatique_autorisee",
+            entity_type="publication_connection",
+            entity_id=connection_id,
+            metadata={"premiere_publication_action_id": row["first_publication_action_id"]},
+        )
+        connection.commit()
+        updated = _owned_publication_connection_row(connection, owner, connection_id)
+    return _publication_connection_from_row(updated)
+
+
+@app.post("/api/diffusion/connexions/{connection_id}/desactiver-automatique", response_model=PublicationConnection)
+def disable_automatic_publication(
+    connection_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> PublicationConnection:
+    """Return a connection to validation-per-publication mode."""
+
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        row = _owned_publication_connection_row(connection, owner, connection_id)
+        if row["status"] == "revoquee":
+            raise HTTPException(status_code=409, detail="Cette connexion est révoquée.")
+        connection.execute(
+            """
+            UPDATE publication_connections
+            SET publication_mode = 'validation_a_chaque_fois',
+                auto_authorized_at = NULL, auto_authorized_by = NULL, updated_at = ?
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (now, connection_id, owner.workspace_id),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="publication_automatique_desactivee",
+            entity_type="publication_connection",
+            entity_id=connection_id,
+        )
+        connection.commit()
+        updated = _owned_publication_connection_row(connection, owner, connection_id)
+    return _publication_connection_from_row(updated)
+
+
+@app.post("/api/diffusion/connexions/{connection_id}/revoquer", response_model=PublicationConnection)
+def revoke_publication_connection(
+    connection_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> PublicationConnection:
+    """Revoke a platform connection and its automatic publication permission."""
+
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        _owned_publication_connection_row(connection, owner, connection_id)
+        connection.execute(
+            """
+            UPDATE publication_connections
+            SET status = 'revoquee', publication_mode = 'validation_a_chaque_fois',
+                auto_authorized_at = NULL, auto_authorized_by = NULL,
+                revoked_at = ?, updated_at = ?
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (now, now, connection_id, owner.workspace_id),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="connexion_diffusion_revoquee",
+            entity_type="publication_connection",
+            entity_id=connection_id,
+        )
+        connection.commit()
+        updated = _owned_publication_connection_row(connection, owner, connection_id)
+    return _publication_connection_from_row(updated)
+
+
+@app.post("/api/internal/diffusion/connexions/{connection_id}/activer", response_model=PublicationConnection)
+def activate_publication_connection(
+    connection_id: str,
+    payload: InternalPublicationConnectionActivation,
+    request: Request,
+) -> PublicationConnection:
+    """Mark a connector active after its official OAuth/partner handshake."""
+
+    _agent_internal_auth(request)
+    now = _iso_now()
+    reference = _clean_text(payload.reference_compte, 500)
+    reference_hash = hashlib.sha256(reference.encode("utf-8")).hexdigest() if reference else ""
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT * FROM publication_connections WHERE id = ?", (connection_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Connexion de diffusion introuvable.")
+        connection.execute(
+            """
+            UPDATE publication_connections
+            SET status = 'active', external_account_ref_hash = ?, revoked_at = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (reference_hash, now, connection_id),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=row["workspace_id"],
+            actor_type="agent",
+            actor_id="publication-connector",
+            event_name="connexion_diffusion_activee",
+            entity_type="publication_connection",
+            entity_id=connection_id,
+            metadata={"reference_compte_hash": reference_hash},
+        )
+        connection.commit()
+        updated = connection.execute(
+            "SELECT * FROM publication_connections WHERE id = ?", (connection_id,)
+        ).fetchone()
+    return _publication_connection_from_row(updated)
+
+
 @app.get("/api/agent-runs", response_model=list[AgentRun])
 def list_agent_runs(
     statut: AgentRunStatus | None = None,
@@ -4423,6 +4734,30 @@ def execute_action(action_id: str, payload: ActionExecutionUpdate, request: Requ
             raise HTTPException(status_code=409, detail="Cette action a expiré et doit être préparée à nouveau.")
         if row["requires_approval"] and row["status"] != "autorisee":
             raise HTTPException(status_code=409, detail="La validation du propriétaire est requise avant exécution.")
+        publication_payload: dict[str, object] = {}
+        if row["action_type"] == "publier_annonce":
+            try:
+                publication_payload = json.loads(row["payload_json"] or "{}")
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=409, detail="Le contenu de publication est invalide.") from exc
+            connection_id = str(publication_payload.get("connection_id", "")).strip()
+            if not connection_id:
+                raise HTTPException(status_code=422, detail="Une publication doit indiquer sa connexion de diffusion.")
+            publication_connection = connection.execute(
+                """
+                SELECT * FROM publication_connections
+                WHERE id = ? AND workspace_id = ?
+                """,
+                (connection_id, row["workspace_id"]),
+            ).fetchone()
+            if publication_connection is None:
+                raise HTTPException(status_code=404, detail="La connexion de diffusion est introuvable dans ce workspace.")
+            if publication_connection["status"] != "active":
+                raise HTTPException(status_code=409, detail="La connexion de diffusion n'est pas active.")
+            if publication_payload.get("publication_automatique") is True and publication_connection["publication_mode"] != "automatique":
+                raise HTTPException(status_code=409, detail="La publication automatique n'est pas autorisée pour ce compte.")
+            if publication_payload.get("premiere_publication") is True and publication_connection["first_publication_validated_at"]:
+                raise HTTPException(status_code=409, detail="La première publication de ce compte est déjà enregistrée.")
         result_json = _json_object(payload.resultat, label="Le résultat d'exécution", maximum=20_000)
         reference = _clean_text(payload.reference_execution, 240)
         connection.execute(
@@ -4434,6 +4769,27 @@ def execute_action(action_id: str, payload: ActionExecutionUpdate, request: Requ
             """,
             (now, reference, now, action_id),
         )
+        if publication_payload.get("premiere_publication") is True:
+            connection_id = str(publication_payload["connection_id"])
+            connection.execute(
+                """
+                UPDATE publication_connections
+                SET first_publication_validated_at = ?, first_publication_action_id = ?, updated_at = ?
+                WHERE id = ? AND workspace_id = ?
+                """,
+                (now, action_id, now, connection_id, row["workspace_id"]),
+            )
+            _record_audit_event(
+                connection,
+                workspace_id=row["workspace_id"],
+                actor_type="system",
+                actor_id="publication-connector",
+                event_name="premiere_publication_validee",
+                entity_type="publication_connection",
+                entity_id=connection_id,
+                property_id=row["property_id"],
+                metadata={"action_id": action_id, "reference_execution": reference},
+            )
         _record_audit_event(
             connection,
             workspace_id=row["workspace_id"],

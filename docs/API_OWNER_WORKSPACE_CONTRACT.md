@@ -12,6 +12,7 @@ workspace
   │     └── completeness / coherence findings
   ├── agent runs
   ├── private agent team / orchestrator messages
+  ├── publication connections / first validation
   ├── actions / approvals
   ├── visits
   └── audit events
@@ -34,6 +35,23 @@ Le propriétaire consulte l'équipe avec `GET /api/agents`. L'Orchestrateur est 
 - `GET /api/agents/{agent_id}` affiche un agent de son propre workspace.
 
 Une demande est conservée dans `agent_messages`, rattachée à `agent_runs` et auditée. La réponse IA n'est pas fabriquée par cette route : un worker d'orchestration devra consommer la mission, appeler le fournisseur autorisé, produire les preuves et écrire la réponse. Le propriétaire peut donc déjà voir la présence de son équipe et lui parler depuis le frontend, sans exposer de mission ou de donnée d'un autre workspace.
+
+## Publication et autorisation d'un compte propriétaire
+
+L'Agent Diffusion prépare les annonces et les transmet uniquement à des canaux autorisés. Le backend sépare le compte de diffusion, la première publication et l'autorisation d'automatiser les suivantes.
+
+Les routes sont :
+
+- `GET /api/diffusion/connexions` pour lister les comptes du workspace ;
+- `POST /api/diffusion/connexions` pour enregistrer un compte à connecter, sans mot de passe ;
+- `POST /api/internal/diffusion/connexions/{id}/activer` pour le connecteur officiel après OAuth ou activation partenaire ;
+- `POST /api/diffusion/connexions/{id}/autoriser-automatique` après une première publication validée et exécutée ;
+- `POST /api/diffusion/connexions/{id}/desactiver-automatique` pour revenir à une validation à chaque annonce ;
+- `POST /api/diffusion/connexions/{id}/revoquer` pour couper la connexion et l'autorisation automatique.
+
+La première publication est une action `publier_annonce` de l'Agent Diffusion. Elle doit être approuvée par le propriétaire avant l'exécution. Le canal interne marque alors `first_publication_validated_at` et conserve l'identifiant de l'action. Tant que ce champ est vide, l'autorisation automatique répond `409`. Une publication automatique ultérieure doit déclarer la connexion dans son payload et le mode automatique doit être actif.
+
+Aucun mot de passe n'est stocké. La connexion reste propre au workspace, les références de compte sont hachées et les activations, autorisations, désactivations et révocations sont inscrites dans l'audit. Cette couche ne contourne aucun CAPTCHA, aucune règle de plateforme et ne crée pas encore de connecteur réel.
 
 ## Première tranche
 

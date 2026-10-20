@@ -53,6 +53,10 @@ Visite, bail puis suivi du bien
 
 Il transforme les données du bien en annonce, contrôle les champs manquants et prépare les variantes de publication. Il ne publie pas sur un portail sans canal autorisé ni validation définie.
 
+### Agent Diffusion
+
+Il prépare et suit la publication d'une annonce sur les plateformes choisies par le propriétaire. Il utilise un connecteur officiel ou partenaire, ne conserve jamais les mots de passe et demande une première validation manuelle. Après cette première publication exécutée avec succès, le propriétaire peut autoriser les publications automatiques pour ce compte ; cette autorisation reste révocable et auditée.
+
 ### Agent Candidatures
 
 Il centralise les dossiers entrants depuis les intégrations autorisées, rattache chaque pièce au bon candidat et dédoublonne les demandes.
