@@ -1978,3 +1978,102 @@ def test_inspection_lifecycle_checks_rooms_entries_and_prepares_signature():
         listed = owner.get(f"/api/biens/{property_id}/etats-des-lieux")
         assert listed.status_code == 200
         assert listed.json()[0]["id"] == inspection_id
+
+
+def test_dashboard_summary_is_workspace_scoped_and_aggregates_owner_activity():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.AGENT_INTERNAL_TOKEN = "dashboard-agent-token"
+        owner = TestClient(main.app)
+        other = TestClient(main.app)
+        owner_created = owner.post(
+            "/api/compte",
+            json={"action": "creer", "prenom": "Owner", "email": "dashboard-owner@example.test", "mdp": "correct horse battery staple"},
+        )
+        other_created = other.post(
+            "/api/compte",
+            json={"action": "creer", "prenom": "Other", "email": "dashboard-other@example.test", "mdp": "correct horse battery staple"},
+        )
+        assert owner_created.status_code == 200
+        assert other_created.status_code == 200
+        workspace_id = owner_created.json()["workspace_id"]
+        property_id = owner.post(
+            "/api/biens",
+            json={"nom": "Bien dashboard", "type": "appartement", "adresse_ligne1": "1 rue accueil", "ville": "Lyon", "statut": "vacant"},
+        ).json()["id"]
+        application = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={"candidat_prenom": "Alex", "candidat_nom": "Dashboard", "candidat_email": "alex-dashboard@example.test", "statut": "a_completer"},
+        )
+        assert application.status_code == 201
+        application_id = application.json()["id"]
+        inspection = owner.post(f"/api/biens/{property_id}/etats-des-lieux", json={"type": "entree"})
+        assert inspection.status_code == 201
+
+        with main._connect() as connection:
+            slot_id = "slot-dashboard"
+            visit_id = "visit-dashboard"
+            future = "2099-01-01T10:00:00+01:00"
+            connection.execute(
+                """
+                INSERT INTO visit_slots(id, workspace_id, property_id, starts_at, ends_at, timezone, mode, status, created_at)
+                VALUES (?, ?, ?, ?, ?, 'Europe/Paris', 'sur_place', 'reserve', ?)
+                """,
+                (slot_id, workspace_id, property_id, future, "2099-01-01T11:00:00+01:00", main._iso_now()),
+            )
+            connection.execute(
+                """
+                INSERT INTO visits(id, workspace_id, property_id, application_id, slot_id, status, source, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'confirmee', 'agent', ?, ?)
+                """,
+                (visit_id, workspace_id, property_id, application_id, slot_id, main._iso_now(), main._iso_now()),
+            )
+            connection.commit()
+
+        run = owner.post(
+            "/api/internal/agent-runs",
+            headers={"x-piaule-agent-token": "dashboard-agent-token"},
+            json={"workspace_id": workspace_id, "type_agent": "agent-completude", "mission": "Vérifier le dossier dashboard", "cible_type": "candidature", "cible_id": application_id},
+        )
+        assert run.status_code == 201
+        action = owner.post(
+            "/api/internal/actions",
+            headers={"x-piaule-agent-token": "dashboard-agent-token"},
+            json={
+                "workspace_id": workspace_id,
+                "type_action": "preparer_message_candidat",
+                "libelle": "Demander une pièce",
+                "description": "Une pièce manque.",
+                "niveau_risque": "transmission",
+                "cible_type": "candidature",
+                "cible_id": application_id,
+                "bien_id": property_id,
+                "agent_run_id": run.json()["id"],
+                "idempotency_key": "dashboard-action-1",
+            },
+        )
+        assert action.status_code == 201
+
+        dashboard = owner.get("/api/dashboard")
+        assert dashboard.status_code == 200
+        data = dashboard.json()
+        assert data["biens"] == {"total": 1, "preparation": 0, "vacants": 1, "occupes": 0, "archives": 0}
+        assert data["candidatures"]["total"] == 1
+        assert data["candidatures"]["par_statut"]["a_completer"] == 1
+        assert data["dossiers_incomplets"] == 1
+        assert data["visites_a_venir"] == 1
+        assert data["etats_des_lieux_en_cours"] == 1
+        assert data["actions_en_attente"] == 1
+        assert len(data["activite_agents"]) == 1
+        assert data["activite_agents"][0]["type_agent"] == "agent-completude"
+        assert data["mis_a_jour_le"]
+
+        other_dashboard = other.get("/api/dashboard")
+        assert other_dashboard.status_code == 200
+        other_data = other_dashboard.json()
+        assert other_data["biens"]["total"] == 0
+        assert other_data["candidatures"]["total"] == 0
+        assert other_data["actions_en_attente"] == 0
+        assert other_data["activite_agents"] == []

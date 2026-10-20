@@ -131,6 +131,42 @@ class WorkspaceMember(BaseModel):
     joined_at: str
 
 
+class DashboardPropertySummary(BaseModel):
+    total: int
+    preparation: int
+    vacants: int
+    occupes: int
+    archives: int
+
+
+class DashboardApplicationSummary(BaseModel):
+    total: int
+    par_statut: dict[str, int]
+
+
+class DashboardAgentActivity(BaseModel):
+    id: str
+    agent: str
+    type_agent: str
+    mission: str
+    statut: AgentRunStatus
+    cible_type: str
+    cible_id: str
+    date: str
+
+
+class DashboardSummary(BaseModel):
+    biens: DashboardPropertySummary
+    candidatures: DashboardApplicationSummary
+    dossiers_incomplets: int
+    anomalies: int
+    visites_a_venir: int
+    etats_des_lieux_en_cours: int
+    actions_en_attente: int
+    activite_agents: list[DashboardAgentActivity]
+    mis_a_jour_le: str
+
+
 AgentRunStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 ActionStatus = Literal[
     "proposee",
@@ -6745,6 +6781,129 @@ def list_workspace_members(owner: Candidate = Depends(current_candidate)) -> lis
         )
         for row in rows
     ]
+
+
+@app.get("/api/dashboard", response_model=DashboardSummary)
+def get_dashboard_summary(owner: Candidate = Depends(current_candidate)) -> DashboardSummary:
+    """Return the owner home-screen summary in one workspace-scoped response."""
+
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        property_rows = connection.execute(
+            "SELECT statut, COUNT(*) AS count FROM properties WHERE workspace_id = ? GROUP BY statut",
+            (owner.workspace_id,),
+        ).fetchall()
+        property_counts = {row["statut"]: int(row["count"]) for row in property_rows}
+
+        application_rows = connection.execute(
+            "SELECT statut, COUNT(*) AS count FROM owner_applications WHERE workspace_id = ? GROUP BY statut",
+            (owner.workspace_id,),
+        ).fetchall()
+        application_counts = {status: 0 for status in APPLICATION_STATUS_VALUES}
+        application_counts.update({row["statut"]: int(row["count"]) for row in application_rows})
+
+        incomplete_count = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM owner_applications
+            WHERE workspace_id = ? AND statut = 'a_completer'
+            """,
+            (owner.workspace_id,),
+        ).fetchone()["count"]
+
+        document_rows = connection.execute(
+            """
+            SELECT statut, anomalies_json
+            FROM application_documents
+            WHERE workspace_id = ?
+            """,
+            (owner.workspace_id,),
+        ).fetchall()
+        anomaly_count = 0
+        for document in document_rows:
+            try:
+                anomalies = json.loads(document["anomalies_json"] or "[]")
+            except (TypeError, ValueError):
+                anomalies = ["anomalies_json_invalide"]
+            if anomalies or document["statut"] in {"a_corriger", "expire", "refuse"}:
+                anomaly_count += 1
+
+        upcoming_visits = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM visits v
+            JOIN visit_slots s ON s.id = v.slot_id
+            WHERE v.workspace_id = ?
+              AND v.status IN ('proposee', 'confirmee')
+              AND s.starts_at >= ?
+            """,
+            (owner.workspace_id, now),
+        ).fetchone()["count"]
+
+        inspection_statuses = ("brouillon", "en_cours", "a_verifier", "pret_signature", "conteste")
+        inspection_placeholders = ", ".join("?" for _ in inspection_statuses)
+        inspections_in_progress = connection.execute(
+            f"""
+            SELECT COUNT(*) AS count FROM inspections
+            WHERE workspace_id = ? AND status IN ({inspection_placeholders})
+            """,
+            (owner.workspace_id, *inspection_statuses),
+        ).fetchone()["count"]
+
+        pending_actions = connection.execute(
+            """
+            SELECT COUNT(*) AS count FROM actions
+            WHERE workspace_id = ? AND status IN ('proposee', 'a_valider')
+            """,
+            (owner.workspace_id,),
+        ).fetchone()["count"]
+
+        activity_rows = connection.execute(
+            """
+            SELECT ar.id, ar.agent_type, ar.mission, ar.status, ar.target_type,
+                   ar.target_id, ar.created_at, COALESCE(wa.display_name, ar.agent_type) AS agent_name
+            FROM agent_runs ar
+            LEFT JOIN workspace_agents wa
+              ON wa.workspace_id = ar.workspace_id AND wa.role_key = ar.agent_type
+            WHERE ar.workspace_id = ?
+            ORDER BY ar.created_at DESC, ar.id DESC
+            LIMIT 8
+            """,
+            (owner.workspace_id,),
+        ).fetchall()
+
+    return DashboardSummary(
+        biens=DashboardPropertySummary(
+            total=sum(property_counts.values()),
+            preparation=property_counts.get("preparation", 0),
+            vacants=property_counts.get("vacant", 0),
+            occupes=property_counts.get("occupe", 0) + property_counts.get("partiellement_occupe", 0),
+            archives=property_counts.get("archive", 0),
+        ),
+        candidatures=DashboardApplicationSummary(
+            total=sum(application_counts.values()),
+            par_statut=application_counts,
+        ),
+        dossiers_incomplets=int(incomplete_count),
+        anomalies=anomaly_count,
+        visites_a_venir=int(upcoming_visits),
+        etats_des_lieux_en_cours=int(inspections_in_progress),
+        actions_en_attente=int(pending_actions),
+        activite_agents=[
+            DashboardAgentActivity(
+                id=row["id"],
+                agent=row["agent_name"],
+                type_agent=row["agent_type"],
+                mission=row["mission"],
+                statut=row["status"],
+                cible_type=row["target_type"],
+                cible_id=row["target_id"],
+                date=row["created_at"],
+            )
+            for row in activity_rows
+        ],
+        mis_a_jour_le=now,
+    )
 
 
 @app.get("/api/biens", response_model=list[Property])

@@ -5,6 +5,7 @@
 ```text
 workspace
   ├── members
+  ├── dashboard summary
   ├── properties / lots
   ├── applications
   │     ├── candidate reference
