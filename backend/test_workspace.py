@@ -331,3 +331,59 @@ def test_owner_applications_are_attached_to_property_and_duplicates_are_flagged(
         assert associated.json()["candidature_id"] == application_id
 
         assert other.get(f"/api/biens/{property_id}/candidatures/{application_id}").status_code == 404
+
+
+def test_dossier_facile_connect_requires_partner_configuration_and_keeps_summary_minimal():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        owner = TestClient(main.app)
+        assert owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Celine",
+                "email": "dossier-facile-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        ).status_code == 200
+        property_id = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien DossierFacile",
+                "type": "appartement",
+                "adresse_ligne1": "2 rue du Test",
+                "ville": "Lille",
+            },
+        ).json()["id"]
+        application_id = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Demo",
+                "candidat_email": "alex@example.test",
+            },
+        ).json()["id"]
+
+        response = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/dossier-facile/connect"
+        )
+        assert response.status_code == 503
+        assert "identifiants partenaires" in response.json()["detail"]
+
+    status, tenant_id, summary = main._dossier_facile_summary(
+        {
+            "tenantId": "tenant-123",
+            "status": "VALIDATED",
+            "documents": [{"status": "VALIDATED"}],
+            "private_document_content": "must not be stored",
+        }
+    )
+    assert status == "verifiee"
+    assert tenant_id == "tenant-123"
+    assert summary == {
+        "statut_dossier": "VALIDATED",
+        "documents_total": 1,
+        "documents_statuts": ["VALIDATED"],
+    }

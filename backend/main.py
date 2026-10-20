@@ -16,6 +16,7 @@ import re
 import secrets
 import sqlite3
 import time
+import base64
 from contextlib import closing
 from datetime import date
 from pathlib import Path
@@ -25,7 +26,7 @@ from urllib.parse import urlencode
 from urllib.request import Request as URLRequest, urlopen
 from uuid import uuid4
 
-from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi import Body, Cookie, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -48,6 +49,15 @@ FRONTEND_REDIRECT_URI = os.getenv(
     "PIAULE_FRONTEND_REDIRECT_URI",
     "http://127.0.0.1:5173/espace.html",
 ).strip()
+DOSSIER_FACILE_ENABLED = os.getenv("PIAULE_DOSSIER_FACILE_ENABLED", "false").lower() == "true"
+DOSSIER_FACILE_CLIENT_ID = os.getenv("PIAULE_DOSSIER_FACILE_CLIENT_ID", "").strip()
+DOSSIER_FACILE_CLIENT_SECRET = os.getenv("PIAULE_DOSSIER_FACILE_CLIENT_SECRET", "").strip()
+DOSSIER_FACILE_AUTH_URL = os.getenv("PIAULE_DOSSIER_FACILE_AUTH_URL", "").strip()
+DOSSIER_FACILE_TOKEN_URL = os.getenv("PIAULE_DOSSIER_FACILE_TOKEN_URL", "").strip()
+DOSSIER_FACILE_PROFILE_URL = os.getenv("PIAULE_DOSSIER_FACILE_PROFILE_URL", "").strip()
+DOSSIER_FACILE_REDIRECT_URI = os.getenv("PIAULE_DOSSIER_FACILE_REDIRECT_URI", "").strip()
+DOSSIER_FACILE_WEBHOOK_TOKEN = os.getenv("PIAULE_DOSSIER_FACILE_WEBHOOK_TOKEN", "").strip()
+DOSSIER_FACILE_STATE_SECONDS = 600
 
 STATE_DIRECTORY = Path(os.getenv("PIAULE_STATE_DIRECTORY", ".local-state"))
 DATABASE_PATH = Path(
@@ -291,6 +301,38 @@ class InboundApplicationMessage(BaseModel):
     statut: Literal["recue", "en_analyse", "associee", "a_verifier", "rejetee"]
     candidature_id: str | None = None
     recu_le: str
+
+
+class DossierFacileConnection(BaseModel):
+    id: str
+    workspace_id: str
+    candidature_id: str
+    statut: Literal["initiee", "connectee", "a_completer", "verifiee", "refusee", "erreur"]
+    statut_dossier: str
+    evenement: str
+    tenant_id: str
+    resume: dict[str, object]
+    created_at: str
+    updated_at: str
+
+
+class DossierFacileConnectStart(BaseModel):
+    id: str
+    candidature_id: str
+    statut: Literal["initiee"]
+    autorisation_url: str
+    expire_le: int
+
+
+class DossierFacileWebhook(BaseModel):
+    id: int | str | None = None
+    onTenantId: int | str | None = None
+    partnerCallBackType: str | None = None
+    applicationType: str | None = None
+    dossierUrl: str | None = None
+    dossierPdfDocumentStatus: str | None = None
+    dossierPdfUrl: str | None = None
+    status: str | None = None
 
 
 class PasswordChangeRequest(BaseModel):
@@ -597,6 +639,25 @@ def _ensure_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS inbound_application_workspace_idx ON inbound_application_messages(workspace_id);
             CREATE INDEX IF NOT EXISTS inbound_application_channel_idx ON inbound_application_messages(channel_id);
+            CREATE TABLE IF NOT EXISTS dossier_facile_connections (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                state_hash TEXT NOT NULL UNIQUE,
+                statut TEXT NOT NULL,
+                statut_dossier TEXT NOT NULL DEFAULT '',
+                evenement TEXT NOT NULL DEFAULT '',
+                tenant_id TEXT NOT NULL DEFAULT '',
+                resume_json TEXT NOT NULL DEFAULT '{}',
+                expires_at REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS dossier_facile_workspace_idx ON dossier_facile_connections(workspace_id);
+            CREATE INDEX IF NOT EXISTS dossier_facile_application_idx ON dossier_facile_connections(application_id);
+            CREATE INDEX IF NOT EXISTS dossier_facile_tenant_idx ON dossier_facile_connections(tenant_id);
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
                 email TEXT NOT NULL,
@@ -1155,6 +1216,131 @@ def _inbound_message_from_row(row: sqlite3.Row) -> InboundApplicationMessage:
         candidature_id=row["application_id"],
         recu_le=row["recu_le"],
     )
+
+
+def _dossier_facile_connection_from_row(row: sqlite3.Row) -> DossierFacileConnection:
+    return DossierFacileConnection(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        candidature_id=row["application_id"],
+        statut=row["statut"],
+        statut_dossier=row["statut_dossier"],
+        evenement=row["evenement"],
+        tenant_id=row["tenant_id"],
+        resume=json.loads(row["resume_json"] or "{}"),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _dossier_facile_is_configured() -> bool:
+    return DOSSIER_FACILE_ENABLED and all(
+        (
+            DOSSIER_FACILE_CLIENT_ID,
+            DOSSIER_FACILE_CLIENT_SECRET,
+            DOSSIER_FACILE_AUTH_URL,
+            DOSSIER_FACILE_TOKEN_URL,
+            DOSSIER_FACILE_PROFILE_URL,
+            DOSSIER_FACILE_REDIRECT_URI,
+        )
+    )
+
+
+def _dossier_facile_http_json(
+    request: URLRequest, *, error_message: str, timeout: int = 15
+) -> dict[str, object]:
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail=error_message) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail=error_message)
+    return payload
+
+
+def _dossier_facile_exchange_code(code: str) -> dict[str, object]:
+    credentials = base64.b64encode(
+        f"{DOSSIER_FACILE_CLIENT_ID}:{DOSSIER_FACILE_CLIENT_SECRET}".encode("utf-8")
+    ).decode("ascii")
+    body = urlencode(
+        {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": DOSSIER_FACILE_REDIRECT_URI,
+            "client_id": DOSSIER_FACILE_CLIENT_ID,
+        }
+    ).encode("utf-8")
+    request = URLRequest(
+        DOSSIER_FACILE_TOKEN_URL,
+        data=body,
+        headers={
+            "Authorization": f"Basic {credentials}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    return _dossier_facile_http_json(
+        request,
+        error_message="DossierFacile n'a pas accepté la connexion du candidat.",
+    )
+
+
+def _dossier_facile_fetch_profile(access_token: str) -> dict[str, object]:
+    request = URLRequest(
+        DOSSIER_FACILE_PROFILE_URL,
+        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+        method="GET",
+    )
+    return _dossier_facile_http_json(
+        request,
+        error_message="Le profil DossierFacile n'a pas pu être récupéré.",
+    )
+
+
+def _dossier_facile_summary(payload: dict[str, object]) -> tuple[str, str, dict[str, object]]:
+    apartment = payload.get("apartmentSharing")
+    apartment_data = apartment if isinstance(apartment, dict) else {}
+    raw_status = payload.get("status") or apartment_data.get("status") or ""
+    dossier_status = str(raw_status).strip().upper()
+    tenant_id = payload.get("tenantId") or payload.get("tenant_id") or payload.get("id") or ""
+    documents = payload.get("documents")
+    document_statuses: list[str] = []
+    if isinstance(documents, list):
+        for document in documents:
+            if isinstance(document, dict) and document.get("status"):
+                document_statuses.append(str(document["status"]).upper())
+    if dossier_status in {"VALIDATED", "VERIFIED", "VERIFIED_ACCOUNT"}:
+        connection_status = "verifiee"
+    elif dossier_status in {"DECLINED", "DENIED", "DENIED_ACCOUNT"}:
+        connection_status = "refusee"
+    elif dossier_status in {"INCOMPLETE", "ARCHIVED_ACCOUNT"}:
+        connection_status = "a_completer"
+    else:
+        connection_status = "connectee"
+    summary: dict[str, object] = {
+        "statut_dossier": dossier_status,
+        "documents_total": len(document_statuses),
+        "documents_statuts": document_statuses,
+    }
+    return connection_status, str(tenant_id), summary
+
+
+def _dossier_facile_connection_for_owner(
+    connection: sqlite3.Connection, owner: Candidate, application_id: str
+) -> sqlite3.Row:
+    row = connection.execute(
+        """
+        SELECT * FROM dossier_facile_connections
+        WHERE application_id = ? AND workspace_id = ?
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (application_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Aucune connexion DossierFacile pour cette candidature.")
+    return row
 
 
 def _owned_application_channel_row(
@@ -2287,6 +2473,241 @@ def associate_inbound_application(
             (message_id, owner.workspace_id),
         ).fetchone()
     return _inbound_message_from_row(row)
+
+
+@app.post(
+    "/api/biens/{property_id}/candidatures/{application_id}/dossier-facile/connect",
+    response_model=DossierFacileConnectStart,
+)
+def start_dossier_facile_connection(
+    property_id: str,
+    application_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> DossierFacileConnectStart:
+    """Prepare a candidate-consent URL for DossierFacile Connect."""
+
+    if not _dossier_facile_is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="DossierFacile Connect n'est pas encore configuré avec des identifiants partenaires.",
+        )
+    state = secrets.token_urlsafe(32)
+    state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    connection_id = f"dfc-{uuid4().hex[:16]}"
+    expires_at = time.time() + DOSSIER_FACILE_STATE_SECONDS
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        application = connection.execute(
+            """
+            SELECT * FROM owner_applications
+            WHERE id = ? AND property_id = ? AND workspace_id = ?
+            """,
+            (application_id, property_id, owner.workspace_id),
+        ).fetchone()
+        if application is None:
+            raise HTTPException(status_code=404, detail="Candidature introuvable dans ce bien.")
+        connection.execute(
+            "DELETE FROM dossier_facile_connections WHERE application_id = ? AND workspace_id = ? AND statut = 'initiee'",
+            (application_id, owner.workspace_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO dossier_facile_connections(
+                id, workspace_id, application_id, state_hash, statut, expires_at,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'initiee', ?, datetime('now'), datetime('now'))
+            """,
+            (connection_id, owner.workspace_id, application_id, state_hash, expires_at),
+        )
+        connection.commit()
+
+    query: dict[str, str] = {
+        "client_id": DOSSIER_FACILE_CLIENT_ID,
+        "redirect_uri": DOSSIER_FACILE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid",
+        "state": state,
+    }
+    if application["candidat_email"]:
+        query["login_hint"] = application["candidat_email"]
+    authorization_url = f"{DOSSIER_FACILE_AUTH_URL}?{urlencode(query)}"
+    return DossierFacileConnectStart(
+        id=connection_id,
+        candidature_id=application_id,
+        statut="initiee",
+        autorisation_url=authorization_url,
+        expire_le=int(expires_at),
+    )
+
+
+@app.get("/api/dossier-facile/callback", response_model=None)
+def dossier_facile_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse | JSONResponse:
+    """Consume the one-time DossierFacile Connect authorization code."""
+
+    if error:
+        return JSONResponse(status_code=400, content={"ok": False, "erreur": "Le candidat a annulé le partage DossierFacile."})
+    if not code or not state:
+        return JSONResponse(status_code=400, content={"ok": False, "erreur": "La réponse DossierFacile est incomplète."})
+    state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM dossier_facile_connections
+            WHERE state_hash = ? AND statut = 'initiee' AND expires_at > ?
+            """,
+            (state_hash, time.time()),
+        ).fetchone()
+        if row is None:
+            return JSONResponse(status_code=400, content={"ok": False, "erreur": "La demande DossierFacile a expiré ou a déjà été utilisée."})
+        connection.execute(
+            "UPDATE dossier_facile_connections SET expires_at = 0, updated_at = datetime('now') WHERE id = ?",
+            (row["id"],),
+        )
+        connection.commit()
+
+    try:
+        token_payload = _dossier_facile_exchange_code(code)
+        access_token = str(token_payload.get("access_token") or "")
+        if not access_token:
+            raise HTTPException(status_code=502, detail="DossierFacile n'a pas renvoyé de jeton d'accès.")
+        profile_payload = _dossier_facile_fetch_profile(access_token)
+        connection_status, tenant_id, summary = _dossier_facile_summary(profile_payload)
+    except HTTPException as exc:
+        with closing(_connect()) as connection:
+            connection.execute(
+                "UPDATE dossier_facile_connections SET statut = 'erreur', evenement = ?, updated_at = datetime('now') WHERE id = ?",
+                (str(exc.detail), row["id"]),
+            )
+            connection.commit()
+        return JSONResponse(status_code=exc.status_code, content={"ok": False, "erreur": str(exc.detail)})
+
+    application_status = None
+    if connection_status == "verifiee":
+        application_status = "prete"
+    elif connection_status == "a_completer":
+        application_status = "a_completer"
+    with closing(_connect()) as connection:
+        connection.execute(
+            """
+            UPDATE dossier_facile_connections
+            SET statut = ?, statut_dossier = ?, evenement = 'PROFILE_RECU', tenant_id = ?,
+                resume_json = ?, updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (
+                connection_status,
+                str(summary.get("statut_dossier", "")),
+                tenant_id,
+                json.dumps(summary, ensure_ascii=False),
+                row["id"],
+            ),
+        )
+        if application_status:
+            connection.execute(
+                "UPDATE owner_applications SET statut = ?, updated_at = datetime('now') WHERE id = ?",
+                (application_status, row["application_id"]),
+            )
+        connection.commit()
+
+    separator = "&" if "?" in FRONTEND_REDIRECT_URI else "?"
+    return RedirectResponse(
+        f"{FRONTEND_REDIRECT_URI}{separator}dossier_facile={connection_status}&connection_id={row['id']}",
+        status_code=303,
+    )
+
+
+@app.get(
+    "/api/biens/{property_id}/candidatures/{application_id}/dossier-facile",
+    response_model=DossierFacileConnection,
+)
+def get_dossier_facile_connection(
+    property_id: str,
+    application_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> DossierFacileConnection:
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        application = connection.execute(
+            "SELECT id FROM owner_applications WHERE id = ? AND property_id = ? AND workspace_id = ?",
+            (application_id, property_id, owner.workspace_id),
+        ).fetchone()
+        if application is None:
+            raise HTTPException(status_code=404, detail="Candidature introuvable dans ce bien.")
+        row = _dossier_facile_connection_for_owner(connection, owner, application_id)
+    return _dossier_facile_connection_from_row(row)
+
+
+@app.post("/api/internal/dossier-facile/webhook")
+def dossier_facile_webhook(
+    payload: DossierFacileWebhook,
+    request: Request,
+) -> dict[str, object]:
+    """Apply a DossierFacile status event without exposing candidate documents."""
+
+    expected_token = DOSSIER_FACILE_WEBHOOK_TOKEN or os.getenv("PIAULE_DOSSIER_FACILE_WEBHOOK_TOKEN", "").strip()
+    received_token = request.headers.get("x-api-key", "")
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="Le webhook DossierFacile n'est pas configuré.")
+    if not hmac.compare_digest(received_token, expected_token):
+        raise HTTPException(status_code=401, detail="Clé webhook DossierFacile invalide.")
+
+    tenant_id = str(payload.onTenantId or "")
+    event = (payload.partnerCallBackType or "").strip().upper()
+    dossier_status = (payload.status or "").strip().upper()
+    connection_status = "connectee"
+    if event in {"VERIFIED_ACCOUNT"} or dossier_status in {"VALIDATED", "VERIFIED"}:
+        connection_status = "verifiee"
+    elif event in {"DENIED_ACCOUNT"} or dossier_status in {"DECLINED", "DENIED"}:
+        connection_status = "refusee"
+    elif dossier_status in {"INCOMPLETE", "TO_PROCESS"}:
+        connection_status = "a_completer"
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM dossier_facile_connections
+            WHERE tenant_id = ? AND tenant_id <> ''
+            ORDER BY updated_at DESC LIMIT 1
+            """,
+            (tenant_id,),
+        ).fetchone()
+        if row is None:
+            return {"ok": True, "ignore": True}
+        summary = json.loads(row["resume_json"] or "{}")
+        summary.update({"statut_dossier": dossier_status, "evenement": event})
+        connection.execute(
+            """
+            UPDATE dossier_facile_connections
+            SET statut = ?, statut_dossier = ?, evenement = ?,
+                resume_json = ?, updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (
+                connection_status,
+                dossier_status,
+                event,
+                json.dumps(summary, ensure_ascii=False),
+                row["id"],
+            ),
+        )
+        if connection_status == "verifiee":
+            application_status = "prete"
+        elif connection_status == "a_completer":
+            application_status = "a_completer"
+        elif connection_status == "refusee":
+            application_status = "refusee"
+        else:
+            application_status = None
+        if application_status:
+            connection.execute(
+                "UPDATE owner_applications SET statut = ?, updated_at = datetime('now') WHERE id = ?",
+                (application_status, row["application_id"]),
+            )
+        connection.commit()
+    return {"ok": True, "connection_id": row["id"], "statut": connection_status}
 
 
 @app.get("/api/biens/{property_id}/candidatures", response_model=list[OwnerApplication])

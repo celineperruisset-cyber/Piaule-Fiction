@@ -66,6 +66,16 @@ Après extraction des informations, contrôle des pièces et détection des inco
 
 Cette brique prépare le contrat d’intégration ; elle ne configure pas encore la réception réelle du domaine, le fournisseur de boîte e-mail, l’analyse des pièces jointes ni les relances automatiques. Ces éléments seront branchés séparément, après choix du fournisseur entrant.
 
+## Vérification DossierFacile Connect
+
+Piaule Fiction prépare la liaison officielle DossierFacile Connect pour une candidature reçue par e-mail. Le propriétaire peut créer une demande avec `POST /api/biens/{id}/candidatures/{application_id}/dossier-facile/connect`. La réponse contient une URL OAuth2 à transmettre au candidat. Le candidat se connecte à DossierFacile ou via FranceConnect et consent explicitement au partage de son dossier.
+
+Le callback `GET /api/dossier-facile/callback` échange le code à usage unique, récupère le profil DossierFacile et enregistre uniquement un résumé de statut et de progression. Les pièces originales restent gérées par DossierFacile. Le propriétaire consulte l’état avec `GET /api/biens/{id}/candidatures/{application_id}/dossier-facile`.
+
+Le webhook `POST /api/internal/dossier-facile/webhook` met à jour le statut lorsqu’un dossier est créé, complété, validé, décliné, supprimé ou lorsque l’accès partenaire est révoqué. Il est protégé par `x-api-key` et `PIAULE_DOSSIER_FACILE_WEBHOOK_TOKEN`. Un statut DossierFacile validé peut faire passer la candidature à `prete` ; un dossier incomplet, décliné ou révoqué remonte comme exception à traiter.
+
+Le connecteur reste désactivé par défaut. DossierFacile exige un partenariat, une charte et des identifiants de préproduction avant les tests ; l’application ne doit donc jamais simuler une validation officielle lorsqu’elle n’est pas connectée.
+
 La fiche comprend maintenant les types de location, équipements, disponibilité, photos, visibilité de l’adresse, informations DPE, mode de détention et premiers champs de copropriété. Les routes `POST/GET/PUT /api/biens/{id}/suivis` permettent de suivre diagnostics, assurances, contrats fournisseurs et documents de copropriété avec leurs échéances. `GET /api/echeances` remonte les éléments expirés ou arrivant à échéance.
 
 La comptabilité, la fiscalité, le financement, la rentabilité et les tableaux financiers ne font pas partie du produit. Les champs de loyer, charges et dépôt servent uniquement à configurer une mise en location et ses règles opérationnelles.
