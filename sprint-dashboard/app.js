@@ -1,4 +1,4 @@
-const STORAGE_KEY = "piaule-fiction-owner-product-objectives-v1";
+const STORAGE_KEY = "piaule-fiction-owner-product-objectives-v2";
 
 const defaultState = {
   selectedDay: "day-3",

@@ -10,6 +10,9 @@ const R = {
   playwright: { label: "Playwright", url: "https://playwright.dev/docs/intro" },
   githubActions: { label: "GitHub Actions", url: "https://docs.github.com/en/actions/quickstart" },
   caddy: { label: "Caddy HTTPS", url: "https://caddyserver.com/docs/" },
+  franceIdentite: { label: "France Identité — espace pro", url: "https://france-identite.gouv.fr/espace-pro/" },
+  dgfipVerif: { label: "DGFiP — Vérif Avis", url: "https://www.impots.gouv.fr/precisions-sur-le-service-de-verification-en-ligne" },
+  apiParticulier: { label: "API Particulier — habilitation", url: "https://particulier.api.gouv.fr/faq" },
   youtube: { label: "YouTube — gestion locative", url: "https://www.youtube.com/results?search_query=gestion+locative+proprietaire+logiciel" }
 };
 
@@ -19,30 +22,30 @@ const task = (id, title, type, priority, minutes, purpose, steps, doneWhen, reso
 
 const initialTaskStatuses = {
   "owner-ui": "doing",
-  "owner-domain": "todo",
+  "owner-domain": "done",
   "demo-data": "todo",
-  "owner-api": "todo",
-  "property-1": "todo",
-  "candidate-1": "todo",
-  "document-1": "todo",
+  "owner-api": "doing",
+  "property-1": "done",
+  "candidate-1": "done",
+  "document-1": "done",
   "agent-1": "todo",
   "validation-1": "todo",
-  "visit-1": "todo",
-  "source-1": "todo",
+  "visit-1": "done",
+  "source-1": "doing",
   "launch-1": "todo"
 };
 
 const initialObjectiveStatuses = {
   "objective-brand": "doing",
-  "objective-owner-account": "todo",
-  "objective-property": "todo",
-  "objective-applications": "todo",
-  "objective-document-vault": "todo",
-  "objective-completeness": "todo",
+  "objective-owner-account": "done",
+  "objective-property": "done",
+  "objective-applications": "done",
+  "objective-document-vault": "doing",
+  "objective-completeness": "done",
   "objective-comparison": "todo",
   "objective-agents": "doing",
   "objective-validation": "todo",
-  "objective-visits": "todo",
+  "objective-visits": "doing",
   "objective-connectors": "todo",
   "objective-audit": "todo",
   "objective-regulatory": "doing",
@@ -64,9 +67,9 @@ const productPhases = [
 const projectStreams = [
   { id: "stream-brand", title: "Marque et interface propriétaire", label: "Donner envie de déléguer la gestion", status: "doing", color: "lime", now: "Le site Piaule Fiction existe ; son centre de gravité doit devenir l'espace propriétaire.", next: "Construire le tableau de bord biens → candidatures → validations → visites.", proof: "Un propriétaire comprend en moins d'une minute ce que ses agents font pour lui." },
   { id: "stream-workspace", title: "Workspace de gestion", label: "Une vue claire pour chaque bien", status: "doing", color: "blue", now: "La nouvelle architecture fonctionnelle est définie dans la documentation.", next: "Remplacer la prévisualisation candidat par une prévisualisation propriétaire interactive.", proof: "Un propriétaire peut passer d'un bien à ses dossiers et ses prochaines actions." },
-  { id: "stream-dossiers", title: "Dossiers candidats", label: "Lire sans perdre le contexte", status: "todo", color: "teal", now: "Les briques de stockage privé existent mais restent orientées candidat.", next: "Ajouter bien, candidature, pièces, complétude et demandes ciblées.", proof: "Une pièce reçue est rattachée au bon dossier et son état est explicable." },
+  { id: "stream-dossiers", title: "Dossiers candidats", label: "Lire sans perdre le contexte", status: "doing", color: "teal", now: "Les candidatures, pièces, complétude et demandes ciblées sont persistées côté backend.", next: "Relier le coffre et les contrôles au frontend propriétaire.", proof: "Une pièce reçue est rattachée au bon dossier et son état est explicable." },
   { id: "stream-agents", title: "Agents de gestion", label: "Une équipe, pas un chatbot", status: "doing", color: "orange", now: "Les rôles Bien, Dossier, Cohérence, Comparaison, Rendez-vous et Suivi sont cadrés.", next: "Écrire les contrats d'entrée, sortie, permissions et escalades.", proof: "Chaque agent produit une proposition vérifiable et une prochaine action." },
-  { id: "stream-backend", title: "Backend workspace", label: "Une mémoire fiable des biens", status: "todo", color: "pink", now: "Le backend actuel fournit une base session et documents réutilisable.", next: "Faire évoluer le domaine vers propriétaire, biens, candidatures, actions et validations.", proof: "Le frontend et les agents lisent la même source de vérité par propriétaire." },
+  { id: "stream-backend", title: "Backend workspace", label: "Une mémoire fiable des biens", status: "doing", color: "pink", now: "Le backend persiste le workspace, les biens, lots, candidatures, pièces, vérifications et visites.", next: "Construire les actions, validations, audit et orchestrations d’agents.", proof: "Le frontend et les agents lisent la même source de vérité par propriétaire." },
   { id: "stream-connectors", title: "Connecteurs autorisés", label: "Brancher les bons canaux", status: "todo", color: "purple", now: "Les portails et logiciels partenaires doivent être étudiés séparément.", next: "Documenter API, flux, permissions, coût et droits de publication avant chaque adaptateur.", proof: "Aucun connecteur n'utilise un compte tiers ou un accès non autorisé." },
   { id: "stream-boundary", title: "Cadre et partenaires", label: "Rester un logiciel clair", status: "doing", color: "red", now: "La limite logiciel / activité immobilière est documentée.", next: "Faire valider le mode propriétaire et préparer un mode partenaire pour les actes réglementés.", proof: "Chaque écran affiche qui décide, qui envoie et qui porte l'action." },
   { id: "stream-production", title: "Déploiement et exploitation", label: "Un service fiable dans le temps", status: "todo", color: "green", now: "Le VPS existe et servira à la première version de test.", next: "Configurer HTTPS, sauvegardes, surveillance, restauration et séparation des environnements.", proof: "Une mise à jour peut être déployée et restaurée sans perdre les dossiers." }
@@ -93,7 +96,7 @@ const productObjectives = [
 ];
 
 const initialPersonalObjectiveStatuses = {
-  "personal-brief": "doing", "personal-owner-ui": "doing", "personal-domain": "todo", "personal-property": "todo", "personal-dossiers": "todo", "personal-agents": "todo", "personal-validation": "todo", "personal-connectors": "todo", "personal-backend": "todo", "personal-legal": "doing", "personal-launch": "todo"
+  "personal-brief": "doing", "personal-owner-ui": "doing", "personal-domain": "done", "personal-property": "done", "personal-dossiers": "done", "personal-agents": "todo", "personal-validation": "todo", "personal-connectors": "doing", "personal-backend": "doing", "personal-legal": "doing", "personal-launch": "todo"
 };
 
 const personalObjectives = [
@@ -112,12 +115,12 @@ const personalObjectives = [
 
 const calendarRoadmap = [
   { id: "roadmap-1", stage: "Accueil", title: "Promesse propriétaire", description: "Montrer le temps rendu et la présence des agents.", status: "doing", proof: "Un propriétaire comprend le produit sans explication orale." },
-  { id: "roadmap-2", stage: "Workspace", title: "Portefeuille de biens", description: "Voir chaque bien, son statut et ses prochaines actions.", status: "todo", proof: "Un bien synthétique s'ouvre sur son activité." },
-  { id: "roadmap-3", stage: "Candidatures", title: "Pipeline des dossiers", description: "Recevoir, classer et comparer les candidatures.", status: "todo", proof: "Chaque dossier possède un statut et une prochaine action." },
-  { id: "roadmap-4", stage: "Dossier", title: "Complétude en boucle", description: "Demander directement au candidat la pièce autorisée manquante.", status: "todo", proof: "La réception relance automatiquement la relecture." },
+  { id: "roadmap-2", stage: "Workspace", title: "Portefeuille de biens", description: "Voir chaque bien, son statut et ses prochaines actions.", status: "doing", proof: "Un bien synthétique s'ouvre sur son activité." },
+  { id: "roadmap-3", stage: "Candidatures", title: "Pipeline des dossiers", description: "Recevoir, classer et suivre les candidatures.", status: "done", proof: "Chaque dossier possède un statut et une prochaine action." },
+  { id: "roadmap-4", stage: "Dossier", title: "Complétude en boucle", description: "Demander directement au candidat la pièce autorisée manquante.", status: "done", proof: "La réception relance automatiquement la relecture." },
   { id: "roadmap-5", stage: "Agents", title: "Comparaison expliquée", description: "Présenter les faits, preuves, inconnues et alertes.", status: "todo", proof: "Le propriétaire comprend la proposition sans score opaque." },
   { id: "roadmap-6", stage: "Validation", title: "Actions contrôlées", description: "Préparer messages, publications et transmissions dans une file.", status: "todo", proof: "Une action sensible est bloquée tant qu'elle n'est pas autorisée." },
-  { id: "roadmap-7", stage: "Visite", title: "Créneaux compatibles", description: "Proposer, confirmer et historiser les rendez-vous.", status: "todo", proof: "Aucune visite ne crée une acceptation implicite." },
+  { id: "roadmap-7", stage: "Visite", title: "Créneaux compatibles", description: "Proposer, confirmer et historiser les rendez-vous.", status: "doing", proof: "Aucune visite ne crée une acceptation implicite." },
   { id: "roadmap-8", stage: "Production", title: "Partenaires et exploitation", description: "Préparer API, partenaires habilités, sauvegardes et supervision.", status: "todo", proof: "Le rôle juridique et le plan de retour arrière sont explicites." }
 ];
 
@@ -160,6 +163,9 @@ const resourceLibrary = [
   ["Paiement", "Stripe Billing", "Tester les abonnements sans données documentaires monétisées.", R.stripe],
   ["Qualité", "Playwright", "Tester permissions, validations et parcours mobile.", R.playwright],
   ["Déploiement", "Caddy", "Servir l'application en HTTPS sur le VPS.", R.caddy],
+  ["Identité", "France Identité — espace pro", "Préparer une future attestation ou authentification officielle après prise de contact partenaire.", R.franceIdentite],
+  ["Fiscalité", "DGFiP — Vérif Avis", "Vérifier un avis d'impôt via le parcours officiel avec le consentement du candidat.", R.dgfipVerif],
+  ["Fiscalité", "API Particulier", "Comprendre les conditions d'habilitation avant de demander une API restreinte.", R.apiParticulier],
   ["Veille", "Gestion locative", "Observer les outils utilisés par les propriétaires et agences.", R.youtube],
   ["RGPD", "Commission européenne", "Revoir droits, sous-traitance et suppression.", R.gdpr]
 ];
@@ -188,13 +194,13 @@ const sprintDays = [
     task("validation-1", "Construire la file de validation", "build", "core", 150, "Empêcher les transmissions et engagements surprises.", ["Afficher acteur et destinataire.", "Prévisualiser les données.", "Autoriser, refuser ou modifier.", "Journaliser."], "Une action sensible reste bloquée tant qu'elle n'est pas autorisée.")
   ]},
   { id: "day-8", number: 8, date: "Semaine 3", shortDate: "Visites", title: "Organiser les rendez-vous", outcome: "Préparer les créneaux sans confondre visite et acceptation.", deliverable: "Calendrier de visites rattaché au bien.", tasks: [
-    task("visit-1", "Relier les calendriers", "build", "core", 120, "Éviter les échanges dispersés et les doubles réservations.", ["Lire les disponibilités autorisées.", "Proposer les créneaux.", "Gérer confirmation et refus.", "Afficher les rappels."], "Un rendez-vous synthétique est confirmé et historisé.")
+    task("visit-1", "Construire le calendrier interne", "build", "core", 120, "Éviter les échanges dispersés et les doubles réservations.", ["Créer les créneaux du propriétaire.", "Proposer un créneau à une candidature complète.", "Gérer confirmation et refus.", "Préparer les futurs connecteurs Google et Outlook."], "Un rendez-vous synthétique est confirmé et historisé.")
   ]},
   { id: "day-9", number: 9, date: "Semaine 3", shortDate: "Sources", title: "Choisir les connecteurs", outcome: "Brancher uniquement des accès autorisés.", deliverable: "Matrice API, flux, permissions et coûts.", tasks: [
     task("source-1", "Étudier les canaux de publication", "research", "core", 150, "Savoir où le logiciel peut agir légalement et techniquement.", ["Données accessibles.", "API, flux et webhooks.", "Droits de publication.", "Coût, limites et révocation."], "Chaque source possède une décision documentée.")
   ]},
   { id: "day-10", number: 10, date: "Semaine 4", shortDate: "Pilote", title: "Préparer le déploiement", outcome: "Tester le logiciel propriétaire avec un cadre clair.", deliverable: "Pilote, sauvegardes, HTTPS et revue de périmètre.", tasks: [
-    task("owner-api", "Brancher le workspace au backend", "build", "core", 180, "Remplacer la démonstration par des réponses persistées.", ["Créer les routes propriétaire.", "Ajouter biens et candidatures.", "Relier actions et validations.", "Tester l'isolation."], "Le dashboard lit et écrit le premier workspace propriétaire.", [R.fastapi]),
+    task("owner-api", "Relier le workspace au backend", "build", "core", 180, "Remplacer progressivement les données de démonstration par des réponses persistées.", ["Brancher l'authentification.", "Relier biens, lots et candidatures.", "Afficher complétude et visites.", "Tester l'isolation."], "Le dashboard lit et écrit le premier workspace propriétaire.", [R.fastapi]),
     task("launch-1", "Préparer le pilote", "proof", "core", 150, "Passer à une version testable sans données réelles.", ["Configurer HTTPS.", "Vérifier sauvegardes et restauration.", "Tester permissions.", "Faire relire la frontière juridique."], "Le pilote possède un plan de surveillance et de retour arrière.", [R.caddy, R.githubActions, R.cci])
   ]}
 ];

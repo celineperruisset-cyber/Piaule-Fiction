@@ -17,7 +17,7 @@
             <span class="brand-mark">PF</span>
             <span>
               <strong>Piaule Fiction</strong>
-            <small>l'équipe personnelle pour trouver son logement</small>
+            <small>l'équipe personnelle pour gérer tes mises en location</small>
           </span>
         </a>
 
@@ -57,10 +57,10 @@
           <div class="hero-grid">
             <article class="hero-card">
               <p class="eyebrow">GESTION LOCATIVE, ASSISTÉE PAR DES AGENTS</p>
-              <h2>Tes biens avancent pendant que tes agents préparent le travail.</h2>
+              <h2>Louer ton bien, ce n’est plus de la fiction.</h2>
               <p>
-                Piaule Fiction structure tes biens, suit les candidatures, contrôle les dossiers et prépare les prochaines actions.
-                Les agents travaillent en arrière-plan, tandis que tu gardes les décisions, les validations et les actes qui t’appartiennent.
+                Piaule Fiction mobilise des agents IA pour préparer l’annonce, organiser les candidatures, vérifier les dossiers et proposer les visites.
+                Tu gardes les décisions, les validations et les actes qui t’appartiennent.
               </p>
               <div class="hero-actions">
                 <a class="button" href="../frontend/owner-agent-preview.html">Ouvrir le workspace propriétaire <span>↗</span></a>
@@ -139,8 +139,8 @@
             </div>
             <div class="agent-presence-grid">
               <article class="presence-card host-card">
-                <div class="presence-window-top"><span class="presence-logo">F</span><strong>Ton espace de recherche</strong><span class="presence-dots">•••</span></div>
-                <div class="presence-window-body"><span class="presence-line wide"></span><span class="presence-line"></span><span class="presence-line short"></span><div class="agent-badge"><i></i><strong>4 agents actifs</strong><small>23 annonces · 1 action à valider</small></div></div>
+                <div class="presence-window-top"><span class="presence-logo">F</span><strong>Ton espace propriétaire</strong><span class="presence-dots">•••</span></div>
+                <div class="presence-window-body"><span class="presence-line wide"></span><span class="presence-line"></span><span class="presence-line short"></span><div class="agent-badge"><i></i><strong>4 agents actifs</strong><small>3 biens · 1 action à valider</small></div></div>
                 <p><strong>Dans le workspace propriétaire</strong>Les agents restent visibles, avec leurs preuves, leurs permissions et leur prochaine action.</p>
               </article>
               <article class="presence-card agent-console-card">
@@ -160,7 +160,7 @@
 
           <section class="calendar-roadmap-section" aria-labelledby="calendarRoadmapTitle">
             <div class="section-lead compact">
-              <p class="eyebrow">RECHERCHE MULTI-SOURCES · PROGRESSION</p>
+              <p class="eyebrow">MISE EN LOCATION · PROGRESSION</p>
               <h2 id="calendarRoadmapTitle">Tout ce qu’il faut suivre avant qu’une action ne devienne un oubli.</h2>
               <p>Cette feuille de route suit les biens, dossiers, agents, connecteurs, validations et visites à construire.</p>
             </div>
@@ -197,19 +197,19 @@
           </article>
 
           <article class="today-card">
-            <p class="eyebrow">JOURNAL · 16 OCTOBRE 2026</p>
-            <h3>Le cockpit propriétaire devient prioritaire</h3>
-            <p>La première version publique sert à recueillir des retours pendant que le cockpit propriétaire se construit avec des données synthétiques.</p>
+            <p class="eyebrow">JOURNAL · 20 OCTOBRE 2026</p>
+            <h3>Le socle de gestion propriétaire prend forme</h3>
+            <p>Le produit est désormais orienté vers la gestion de mise en location : les biens, les candidatures, les pièces et les visites sont reliés dans un même workspace.</p>
             <ul>
-              <li>Landing page Piaule Fiction publiée pour les premiers retours.</li>
-              <li>Workspace propriétaire défini comme chantier actif.</li>
-              <li>Portefeuille, dossiers, agents, validations et visites à visualiser avant le backend.</li>
-              <li>Architecture de confiance, confidentialité et notion de hors marché documentées.</li>
-              <li>Backlog de différenciation intégré : DossierFacile, droits, score expliqué, alertes, visites et après-bail.</li>
-              <li>Les réponses synthétiques du frontend devront reprendre les futurs contrats du workspace.</li>
-              <li>Sources d'annonces, paiements et authentification réelle restent désactivés.</li>
+              <li>Les routes propriétaire, biens, lots et candidatures sont persistées.</li>
+              <li>La complétude et les demandes ciblées de pièces fonctionnent.</li>
+              <li>Les contrôles documentaires distinguent preuve technique, revue humaine et source officielle.</li>
+              <li>Les demandes France Identité et DGFiP sont préparées avec consentement, sans fausse certification.</li>
+              <li>Les créneaux et propositions de visite sont maintenant gérés dans le backend.</li>
+              <li>Le frontend propriétaire doit maintenant lire ces réponses réelles.</li>
+              <li>Les actions, validations, audit et connecteurs externes restent les prochaines briques.</li>
             </ul>
-            <p><strong>Prochaine étape :</strong> terminer le cockpit propriétaire, puis remplacer progressivement les données synthétiques par les réponses du backend. Les extensions viendront après la validation du premier workflow.</p>
+            <p><strong>Prochaine étape :</strong> relier le cockpit propriétaire à l’API, puis construire la file d’actions et les contrats des agents.</p>
             <p><a href="../docs/PRODUCT_BACKLOG_DIFFERENTIATION.md">Lire le backlog complet de différenciation</a></p>
           </article>
         </section>
@@ -235,7 +235,7 @@
 
         <section id="processesView" class="view">
           <div class="section-lead">
-            <p class="eyebrow">RECHERCHE PRODUIT</p>
+            <p class="eyebrow">GESTION DE MISE EN LOCATION</p>
             <h2>Les procédures que des agents peuvent assister</h2>
             <p>
               Le MVP couvre les biens, dossiers, agents, validations et visites. Les extensions
@@ -262,17 +262,17 @@
         <section id="architectureView" class="view">
           <div class="section-lead">
             <p class="eyebrow">CONCEPTION CIBLE · CONFIANCE</p>
-            <h2>Le moteur qui cherche, vérifie et protège</h2>
-            <p>Le propriétaire configure ses biens et règles, les sources alimentent un format commun, puis les règles et les agents expliquent ce qui est complet, incohérent ou impossible à vérifier. Piaule Fiction ne promet jamais une certification absolue : elle montre les faits et aide à décider.</p>
+            <h2>Le moteur qui structure, vérifie et organise</h2>
+            <p>Le propriétaire configure ses biens et ses règles, puis les agents organisent les candidatures, les pièces, les vérifications et les visites. Piaule Fiction ne promet jamais une certification absolue : elle montre les faits, les preuves et ce qui reste à décider.</p>
           </div>
           <div class="architecture-flow" aria-label="Architecture d'intégration de Piaule Fiction">
             <div class="arch-node browser"><strong>Workspace propriétaire</strong><span>Biens, règles et permissions</span></div>
             <div class="arch-arrow">→</div>
             <div class="arch-node api"><strong>Adaptateurs de sources</strong><span>API, flux autorisés ou e-mail</span></div>
             <div class="arch-arrow">→</div>
-            <div class="arch-node queue"><strong>Annonces normalisées</strong><span>Provenance et dédoublonnage</span></div>
+            <div class="arch-node queue"><strong>Candidatures centralisées</strong><span>Provenance et dédoublonnage</span></div>
             <div class="arch-arrow">→</div>
-            <div class="arch-node agent-layer"><strong>Règles + agents</strong><span>Marché, risque, matching</span></div>
+            <div class="arch-node agent-layer"><strong>Règles + agents</strong><span>Complétude, cohérence, prochaine action</span></div>
             <div class="arch-arrow">→</div>
             <div class="arch-node agent-layer"><strong>Action auditée</strong><span>Dossier, validation ou visite</span></div>
           </div>
@@ -287,9 +287,9 @@
               <h3>Comment ça fonctionne</h3>
               <ol>
                 <li>Le propriétaire décrit ses biens et ses règles.</li>
-                <li>Les sources autorisées sont surveillées.</li>
-                <li>Les annonces sont normalisées, comparées et dédoublonnées.</li>
-                <li>Les agents expliquent le matching, les risques et la prochaine action.</li>
+                <li>Les candidatures autorisées sont rattachées au bon bien.</li>
+                <li>Les pièces sont classées, contrôlées et relancées si nécessaire.</li>
+                <li>Les agents expliquent les preuves, les inconnues et la prochaine action.</li>
               </ol>
             </article>
             <article>
@@ -326,15 +326,15 @@
           <article class="feasibility-card">
             <div class="feasibility-copy">
               <p class="eyebrow">05 · ÉTUDE DE FAISABILITÉ</p>
-              <h3>Ne jamais laisser une recherche se terminer sur un écran vide.</h3>
-              <p>Avant de lancer les agents, Piaule Fiction traduit l’intention du propriétaire, vérifie le périmètre et explique ce qui bloque. Le propriétaire conserve la décision et peut modifier les règles.</p>
+              <h3>Ne jamais laisser une mise en location se terminer dans le flou.</h3>
+              <p>Avant de lancer les agents, Piaule Fiction traduit la mission du propriétaire, vérifie les informations disponibles et explique ce qui bloque. Le propriétaire conserve la décision et peut modifier les règles.</p>
             </div>
             <div class="feasibility-panel" aria-label="Exemple d'étude de faisabilité">
               <div class="feasibility-panel-head"><span>Lecture du projet</span><strong>FAISABLE MAIS TENDU</strong></div>
               <div class="feasibility-meter"><i style="width: 34%"></i></div>
-              <p><strong>Budget : 800 €</strong> · <strong>45 m²</strong> · <strong>Paris 11e</strong></p>
-              <small>8 annonces comparables observées · données récentes · 1 match vérifié</small>
-              <div class="feasibility-options"><button>Élargir la zone</button><button>Réduire la surface</button><button>Activer une alerte</button></div>
+              <p><strong>T2 : 790 €</strong> · <strong>Chambéry</strong> · <strong>Disponible le 1er novembre</strong></p>
+              <small>Annonce structurée · 4 pièces attendues · 2 créneaux de visite possibles</small>
+              <div class="feasibility-options"><button>Compléter le bien</button><button>Voir les pièces</button><button>Préparer une visite</button></div>
             </div>
           </article>
           <div class="security-grid">
@@ -440,8 +440,8 @@
 
           <article class="strategy-next-card">
             <p class="eyebrow">ORDRE DE TRAVAIL RECOMMANDÉ</p>
-            <h3>Prochaine tâche : construire la page d'accueil puis le profil de recherche.</h3>
-            <p>Le site doit d’abord rendre le cockpit propriétaire concret. Nous relierons ensuite biens, dossiers, agents, connecteurs et validations au backend.</p>
+            <h3>Prochaine tâche : relier le cockpit propriétaire au backend.</h3>
+            <p>Les biens, candidatures, pièces et visites existent maintenant côté API. Nous allons connecter l’interface, puis construire les actions, validations et contrats d’agents.</p>
           </article>
         </section>
 
