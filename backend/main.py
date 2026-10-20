@@ -67,6 +67,26 @@ class AccountRequest(BaseModel):
 class Candidate(BaseModel):
     prenom: str
     email: str
+    workspace_id: str
+
+
+class Workspace(BaseModel):
+    id: str
+    name: str
+    owner_email: str
+    role: Literal["owner"] = "owner"
+    created_at: str
+
+
+class WorkspaceUpdate(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+
+
+class WorkspaceMember(BaseModel):
+    email: str
+    prenom: str
+    role: Literal["owner"] = "owner"
+    joined_at: str
 
 
 class PasswordChangeRequest(BaseModel):
@@ -178,8 +198,25 @@ def _ensure_database() -> None:
                 prenom TEXT NOT NULL,
                 salt BLOB NOT NULL,
                 password_hash BLOB NOT NULL,
+                workspace_id TEXT,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                owner_email TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS workspace_members (
+                workspace_id TEXT NOT NULL,
+                email TEXT NOT NULL,
+                role TEXT NOT NULL,
+                joined_at TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, email),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(email) REFERENCES candidates(email) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS workspace_members_email_idx ON workspace_members(email);
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
                 email TEXT NOT NULL,
@@ -243,6 +280,30 @@ def _ensure_database() -> None:
             CREATE INDEX IF NOT EXISTS listings_source_idx ON listings(source);
             """
         )
+        candidate_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(candidates)").fetchall()
+        }
+        if "workspace_id" not in candidate_columns:
+            connection.execute("ALTER TABLE candidates ADD COLUMN workspace_id TEXT")
+
+        # Give legacy accounts a workspace before any workspace-scoped route is used.
+        legacy_accounts = connection.execute(
+            "SELECT email, prenom FROM candidates WHERE workspace_id IS NULL OR workspace_id = ''"
+        ).fetchall()
+        for account in legacy_accounts:
+            workspace_id = f"ws-{uuid4().hex[:16]}"
+            connection.execute(
+                "INSERT INTO workspaces(id, name, owner_email, created_at) VALUES (?, ?, ?, datetime('now'))",
+                (workspace_id, f"Espace de {account['prenom']}", account["email"]),
+            )
+            connection.execute(
+                "UPDATE candidates SET workspace_id = ? WHERE email = ?",
+                (workspace_id, account["email"]),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO workspace_members(workspace_id, email, role, joined_at) VALUES (?, ?, 'owner', datetime('now'))",
+                (workspace_id, account["email"]),
+            )
         for listing in demo_listings():
             connection.execute(
                 """
@@ -315,7 +376,7 @@ def _candidate_from_token(token: str | None) -> Candidate:
     with closing(_connect()) as connection:
         row = connection.execute(
             """
-            SELECT c.prenom, c.email
+            SELECT c.prenom, c.email, c.workspace_id
             FROM sessions s
             JOIN candidates c ON c.email = s.email
             WHERE s.token = ? AND s.expires_at > ?
@@ -324,7 +385,28 @@ def _candidate_from_token(token: str | None) -> Candidate:
         ).fetchone()
     if row is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Connexion requise.")
-    return Candidate(prenom=row["prenom"], email=row["email"])
+    return Candidate(prenom=row["prenom"], email=row["email"], workspace_id=row["workspace_id"])
+
+
+def _workspace_for_owner(owner: Candidate) -> Workspace:
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            """
+            SELECT w.id, w.name, w.owner_email, w.created_at
+            FROM workspaces w
+            JOIN workspace_members m ON m.workspace_id = w.id
+            WHERE w.id = ? AND m.email = ? AND m.role = 'owner'
+            """,
+            (owner.workspace_id, owner.email),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace inaccessible.")
+    return Workspace(
+        id=row["id"],
+        name=row["name"],
+        owner_email=row["owner_email"],
+        created_at=row["created_at"],
+    )
 
 
 def _document_extension(filename: str, content_type: str) -> str | None:
@@ -417,7 +499,7 @@ def health() -> dict[str, str]:
 
 @app.post("/api/compte")
 def account(payload: AccountRequest, request: Request, response: Response) -> dict[str, object]:
-    """Create, authenticate or close a candidate account."""
+    """Create, authenticate or close a property-owner account."""
 
     if payload.action == "deconnexion":
         _clear_session(response, request, request.cookies.get(SESSION_COOKIE))
@@ -457,12 +539,21 @@ def account(payload: AccountRequest, request: Request, response: Response) -> di
                     },
                 )
             salt = secrets.token_bytes(16)
+            workspace_id = f"ws-{uuid4().hex[:16]}"
             connection.execute(
                 """
-                INSERT INTO candidates(email, prenom, salt, password_hash, created_at)
-                VALUES (?, ?, ?, ?, datetime('now'))
+                INSERT INTO candidates(email, prenom, salt, password_hash, workspace_id, created_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
                 """,
-                (email, prenom, salt, _password_hash(password, salt)),
+                (email, prenom, salt, _password_hash(password, salt), workspace_id),
+            )
+            connection.execute(
+                "INSERT INTO workspaces(id, name, owner_email, created_at) VALUES (?, ?, ?, datetime('now'))",
+                (workspace_id, f"Espace de {prenom}", email),
+            )
+            connection.execute(
+                "INSERT INTO workspace_members(workspace_id, email, role, joined_at) VALUES (?, ?, 'owner', datetime('now'))",
+                (workspace_id, email),
             )
         else:
             if row is None:
@@ -477,18 +568,79 @@ def account(payload: AccountRequest, request: Request, response: Response) -> di
                     content={"ok": False, "erreur": "E-mail ou mot de passe incorrect."},
                 )
             prenom = row["prenom"]
+            workspace_id = connection.execute(
+                "SELECT workspace_id FROM candidates WHERE email = ?", (email,)
+            ).fetchone()["workspace_id"]
 
         connection.commit()
 
     _set_session(response, request, email)
-    return {"ok": True, "prenom": prenom, "email": email}
+    return {"ok": True, "prenom": prenom, "email": email, "workspace_id": workspace_id}
 
 
 @app.get("/api/moi", response_model=Candidate)
 def current_candidate(pf_s: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> Candidate:
-    """Return the authenticated candidate or fail with 401."""
+    """Return the authenticated owner account or fail with 401."""
 
     return _candidate_from_token(pf_s)
+
+
+@app.get("/api/workspace", response_model=Workspace)
+def get_workspace(owner: Candidate = Depends(current_candidate)) -> Workspace:
+    """Return the isolated workspace belonging to the authenticated owner."""
+
+    return _workspace_for_owner(owner)
+
+
+@app.put("/api/workspace", response_model=Workspace)
+def update_workspace(
+    payload: WorkspaceUpdate, owner: Candidate = Depends(current_candidate)
+) -> Workspace:
+    """Update only the current owner's workspace metadata."""
+
+    workspace = _workspace_for_owner(owner)
+    name = _clean_text(payload.name, 80)
+    if len(name) < 2:
+        raise HTTPException(status_code=400, detail="Le nom du workspace est trop court.")
+    with closing(_connect()) as connection:
+        connection.execute(
+            "UPDATE workspaces SET name = ? WHERE id = ? AND owner_email = ?",
+            (name, workspace.id, owner.email),
+        )
+        connection.commit()
+    return Workspace(
+        id=workspace.id,
+        name=name,
+        owner_email=workspace.owner_email,
+        created_at=workspace.created_at,
+    )
+
+
+@app.get("/api/workspace/membres", response_model=list[WorkspaceMember])
+def list_workspace_members(owner: Candidate = Depends(current_candidate)) -> list[WorkspaceMember]:
+    """List members of the current workspace without exposing other workspaces."""
+
+    workspace = _workspace_for_owner(owner)
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            """
+            SELECT c.email, c.prenom, m.role, m.joined_at
+            FROM workspace_members m
+            JOIN candidates c ON c.email = m.email
+            WHERE m.workspace_id = ?
+            ORDER BY m.joined_at
+            """,
+            (workspace.id,),
+        ).fetchall()
+    return [
+        WorkspaceMember(
+            email=row["email"],
+            prenom=row["prenom"],
+            role=row["role"] if row["role"] == "owner" else "owner",
+            joined_at=row["joined_at"],
+        )
+        for row in rows
+    ]
 
 
 @app.post("/api/mot-de-passe")

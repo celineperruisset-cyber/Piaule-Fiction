@@ -21,6 +21,6 @@ python3 -m pip install -r backend/requirements.txt
 PIAULE_STATE_DIRECTORY=.local-state uvicorn backend.main:app --reload --port 8000
 ```
 
-Routes de socle actuellement conservées : `GET /health`, compte/session, profil, documents privés et source synthétique. Elles sont une base de transition. Les routes workspace, biens, candidatures, validations et audit sont le prochain bloc de construction décrit dans [`docs/API_OWNER_WORKSPACE_CONTRACT.md`](../docs/API_OWNER_WORKSPACE_CONTRACT.md).
+Routes de socle actuellement conservées : `GET /health`, compte/session, profil, documents privés et source synthétique. Le premier bloc propriétaire est maintenant disponible : `GET /api/workspace`, `PUT /api/workspace` et `GET /api/workspace/membres`. Les routes biens, candidatures, validations et audit suivent le contrat décrit dans [`docs/API_OWNER_WORKSPACE_CONTRACT.md`](../docs/API_OWNER_WORKSPACE_CONTRACT.md).
 
 La base `.local-state/` et les uploads privés ne doivent jamais être versionnés. Aucun connecteur réel, message, publication, signature ou paiement ne doit être activé avant d’avoir une permission explicite, une file de validation et un audit.
