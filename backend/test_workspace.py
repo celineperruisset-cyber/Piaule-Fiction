@@ -355,7 +355,9 @@ def test_owner_applications_are_attached_to_property_and_duplicates_are_flagged(
         )
         assert identity.status_code == 201
         identity_id = identity.json()["id"]
-        assert identity.json()["statut"] == "recu"
+        assert identity.json()["statut"] == "en_verification"
+        assert identity.json()["niveau_verification"] == "controles_techniques"
+        assert identity.json()["anomalies"] == []
         assert identity.json()["provenance"] == "portail_candidat"
         assert owner.get(
             f"/api/biens/{property_id}/candidatures/{application_id}/completude"
@@ -644,3 +646,83 @@ def test_application_status_cycle_records_history_and_blocks_early_visit():
             "refusee",
             "recue",
         ]
+
+
+def test_document_preflight_flags_integrity_type_and_duplicate_without_certifying_content():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        owner = TestClient(main.app)
+        assert owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Celine",
+                "email": "document-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        ).status_code == 200
+        property_id = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien documents",
+                "type": "appartement",
+                "adresse_ligne1": "4 rue du Test",
+                "ville": "Nantes",
+            },
+        ).json()["id"]
+        application_id = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Demo",
+                "candidat_email": "documents@example.test",
+            },
+        ).json()["id"]
+
+        mismatched = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
+            data={"nom": "Identité", "type": "identite"},
+            files={"file": ("avis-imposition.pdf", b"%PDF-valid-header", "application/pdf")},
+        )
+        assert mismatched.status_code == 201
+        assert mismatched.json()["statut"] == "a_corriger"
+        assert "type_probable_incompatible_avec_le_nom" in mismatched.json()["anomalies"]
+
+        unreadable = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
+            data={"nom": "Domicile", "type": "domicile"},
+            files={"file": ("domicile.pdf", b"texte sans signature PDF", "application/pdf")},
+        )
+        assert unreadable.status_code == 201
+        assert unreadable.json()["statut"] == "a_corriger"
+        assert "signature_fichier_incoherente" in unreadable.json()["anomalies"]
+
+        valid_bytes = b"%PDF-identite-valide"
+        first = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
+            data={"nom": "Identité 2", "type": "identite"},
+            files={"file": ("identite-2.pdf", valid_bytes, "application/pdf")},
+        )
+        second = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
+            data={"nom": "Identité 3", "type": "identite"},
+            files={"file": ("identite-3.pdf", valid_bytes, "application/pdf")},
+        )
+        assert first.status_code == 201
+        assert second.status_code == 201
+        assert second.json()["statut"] == "a_corriger"
+        assert "doublon_dans_le_dossier" in second.json()["anomalies"]
+
+        checks = owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces/{second.json()['id']}/controles"
+        )
+        assert checks.status_code == 200
+        assert checks.json()[-1]["controles"]["authenticite"] == "non_verifiable_localement"
+
+        analyzed = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces/{second.json()['id']}/analyser"
+        )
+        assert analyzed.status_code == 200
+        assert analyzed.json()["dernier_controle"]["resultat"] == "attention"

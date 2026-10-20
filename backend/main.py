@@ -19,6 +19,7 @@ import sqlite3
 import smtplib
 import time
 import base64
+import unicodedata
 from contextlib import closing
 from datetime import date
 from email import policy
@@ -377,6 +378,12 @@ ApplicationDocumentStatus = Literal[
     "expire",
     "refuse",
 ]
+ApplicationDocumentVerificationLevel = Literal[
+    "non_verifie",
+    "controles_techniques",
+    "revue_humaine",
+    "source_officielle",
+]
 ApplicationDocumentProvenance = Literal[
     "email",
     "dossier_facile",
@@ -399,6 +406,10 @@ class ApplicationDocument(BaseModel):
     empreinte_sha256: str
     provenance: ApplicationDocumentProvenance
     statut: ApplicationDocumentStatus
+    niveau_verification: ApplicationDocumentVerificationLevel = "non_verifie"
+    anomalies: list[str] = Field(default_factory=list)
+    doublon_de: str | None = None
+    derniere_verification: str | None = None
     date_expiration: str | None = None
     note_verification: str
     created_at: str
@@ -409,6 +420,21 @@ class ApplicationDocumentVerificationUpdate(BaseModel):
     statut: ApplicationDocumentStatus
     note_verification: str = Field(default="", max_length=2000)
     date_expiration: str | None = None
+
+
+class ApplicationDocumentCheck(BaseModel):
+    id: str
+    document_id: str
+    resultat: Literal["ok_technique", "attention", "bloque", "non_verifiable"]
+    controles: dict[str, str]
+    anomalies: list[str]
+    version_moteur: str
+    created_at: str
+
+
+class ApplicationDocumentAnalysisResult(BaseModel):
+    document: ApplicationDocument
+    dernier_controle: ApplicationDocumentCheck
 
 
 class CompletenessItem(BaseModel):
@@ -891,6 +917,11 @@ def _ensure_database() -> None:
                 sha256 TEXT NOT NULL,
                 provenance TEXT NOT NULL,
                 statut TEXT NOT NULL,
+                verification_level TEXT NOT NULL DEFAULT 'non_verifie',
+                anomalies_json TEXT NOT NULL DEFAULT '[]',
+                duplicate_of TEXT,
+                checked_at TEXT,
+                verification_engine_version TEXT NOT NULL DEFAULT '',
                 date_expiration TEXT,
                 note_verification TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
@@ -903,6 +934,21 @@ def _ensure_database() -> None:
             CREATE INDEX IF NOT EXISTS application_documents_application_idx ON application_documents(application_id);
             CREATE INDEX IF NOT EXISTS application_documents_type_idx ON application_documents(application_id, document_type);
             CREATE INDEX IF NOT EXISTS application_documents_hash_idx ON application_documents(workspace_id, sha256);
+            CREATE TABLE IF NOT EXISTS application_document_checks (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                result TEXT NOT NULL,
+                checks_json TEXT NOT NULL DEFAULT '{}',
+                anomalies_json TEXT NOT NULL DEFAULT '[]',
+                engine_version TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE,
+                FOREIGN KEY(document_id) REFERENCES application_documents(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS application_document_checks_document_idx ON application_document_checks(document_id, created_at);
             CREATE TABLE IF NOT EXISTS candidate_access_links (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -1088,6 +1134,14 @@ def _ensure_database() -> None:
             ("tantiemes_generaux", "REAL"),
         ):
             _ensure_column(connection, "lots", column, definition)
+        for column, definition in (
+            ("verification_level", "TEXT NOT NULL DEFAULT 'non_verifie'"),
+            ("anomalies_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("duplicate_of", "TEXT"),
+            ("checked_at", "TEXT"),
+            ("verification_engine_version", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            _ensure_column(connection, "application_documents", column, definition)
         for column, definition in (
             ("statut_motif", "TEXT NOT NULL DEFAULT ''"),
             ("statut_source", "TEXT NOT NULL DEFAULT 'proprietaire'"),
@@ -1795,10 +1849,26 @@ def _application_document_from_row(row: sqlite3.Row) -> ApplicationDocument:
         empreinte_sha256=row["sha256"],
         provenance=row["provenance"],
         statut=row["statut"],
+        niveau_verification=row["verification_level"],
+        anomalies=json.loads(row["anomalies_json"] or "[]"),
+        doublon_de=row["duplicate_of"],
+        derniere_verification=row["checked_at"],
         date_expiration=row["date_expiration"],
         note_verification=row["note_verification"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _application_document_check_from_row(row: sqlite3.Row) -> ApplicationDocumentCheck:
+    return ApplicationDocumentCheck(
+        id=row["id"],
+        document_id=row["document_id"],
+        resultat=row["result"],
+        controles=json.loads(row["checks_json"] or "{}"),
+        anomalies=json.loads(row["anomalies_json"] or "[]"),
+        version_moteur=row["engine_version"],
+        created_at=row["created_at"],
     )
 
 
@@ -1920,6 +1990,181 @@ DOCUMENT_TYPE_LABELS: dict[ApplicationDocumentType, str] = {
     "garant": "pièce du garant",
     "autre": "document complémentaire",
 }
+DOCUMENT_VERIFICATION_ENGINE_VERSION = "technical-v1"
+DOCUMENT_TYPE_FILENAME_HINTS: dict[str, tuple[str, ...]] = {
+    "identite": ("identite", "passeport", "cni", "permis", "sejour", "resident"),
+    "domicile": ("domicile", "quittance", "hebergement", "heberge", "propriete", "taxe_fonciere"),
+    "situation_professionnelle": ("contrat", "travail", "employeur", "attestation", "scolarite", "etudiant", "kbis"),
+    "ressources": ("salaire", "paie", "bulletin", "revenus", "pension", "bourse", "caf"),
+    "imposition": ("impot", "imposition", "fiscal", "avis"),
+    "garant": ("garant", "caution"),
+}
+
+
+def _normalise_document_name(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]+", "_", normalized.lower()).strip("_")
+
+
+def _document_type_filename_hints(filename: str) -> set[str]:
+    normalized = _normalise_document_name(filename)
+    return {
+        document_type
+        for document_type, hints in DOCUMENT_TYPE_FILENAME_HINTS.items()
+        if any(hint in normalized for hint in hints)
+    }
+
+
+def _document_preflight(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> tuple[sqlite3.Row, sqlite3.Row]:
+    """Run safe local checks without claiming authenticity or identity verification."""
+
+    checks: dict[str, str] = {}
+    anomalies: list[str] = []
+    path = UPLOAD_DIRECTORY / row["stored_filename"]
+    expected_extension = Path(row["original_filename"]).suffix.lower().lstrip(".")
+    actual_size = path.stat().st_size if path.exists() else -1
+    checks["fichier_present"] = "oui" if path.exists() else "non"
+    checks["taille"] = "coherente" if actual_size == row["size_bytes"] else "incoherente"
+    if actual_size < 0:
+        anomalies.append("fichier_absent_du_stockage")
+    elif actual_size != row["size_bytes"]:
+        anomalies.append("taille_stockee_incoherente")
+
+    allowed_content_types = ALLOWED_DOCUMENT_TYPES.get(expected_extension, set())
+    checks["extension"] = "supportee" if expected_extension in ALLOWED_DOCUMENT_TYPES else "inconnue"
+    checks["mime"] = "coherent" if row["content_type"] in allowed_content_types else "incoherent"
+    if expected_extension not in ALLOWED_DOCUMENT_TYPES:
+        anomalies.append("extension_non_supportee")
+    elif row["content_type"] not in allowed_content_types:
+        anomalies.append("type_mime_incoherent")
+
+    signature = b""
+    if path.exists():
+        with path.open("rb") as document_file:
+            signature = document_file.read(16)
+    signature_ok = (
+        (expected_extension == "pdf" and signature.startswith(b"%PDF-"))
+        or (expected_extension in {"jpg", "jpeg"} and signature.startswith(b"\xff\xd8\xff"))
+        or (expected_extension == "png" and signature.startswith(b"\x89PNG\r\n\x1a\n"))
+    )
+    checks["signature_fichier"] = "coherente" if signature_ok else "incoherente"
+    if not signature_ok:
+        anomalies.append("signature_fichier_incoherente")
+
+    hints = _document_type_filename_hints(row["original_filename"])
+    declared_type = row["document_type"]
+    checks["type_declare"] = declared_type
+    checks["type_attendu"] = "requis" if declared_type in REQUIRED_APPLICATION_DOCUMENT_TYPES else "optionnel"
+    if hints and declared_type not in hints:
+        checks["type_nom_fichier"] = "probablement_incoherent"
+        anomalies.append("type_probable_incompatible_avec_le_nom")
+    else:
+        checks["type_nom_fichier"] = "compatible_ou_non_concluant"
+
+    expiration_status = "absente"
+    if row["date_expiration"]:
+        try:
+            expiration_status = "expiree" if row["date_expiration"] < date.today().isoformat() else "valide"
+        except TypeError:
+            expiration_status = "invalide"
+            anomalies.append("date_expiration_invalide")
+    checks["expiration"] = expiration_status
+    if expiration_status == "expiree":
+        anomalies.append("document_expire")
+
+    duplicate = connection.execute(
+        """
+        SELECT id FROM application_documents
+        WHERE workspace_id = ? AND application_id = ? AND sha256 = ? AND id <> ?
+        ORDER BY created_at, id LIMIT 1
+        """,
+        (row["workspace_id"], row["application_id"], row["sha256"], row["id"]),
+    ).fetchone()
+    checks["doublon"] = "oui" if duplicate else "non"
+    if duplicate:
+        anomalies.append("doublon_dans_le_dossier")
+
+    # A local check cannot prove that a file was issued by an administration.
+    checks["authenticite"] = "non_verifiable_localement"
+    checks["coherence_identite_revenus"] = "non_verifiee_sans_extraction"
+    checks["niveau_de_confiance"] = "controle_technique_uniquement"
+
+    hard_anomalies = {
+        "fichier_absent_du_stockage",
+        "taille_stockee_incoherente",
+        "extension_non_supportee",
+        "type_mime_incoherent",
+        "signature_fichier_incoherente",
+        "date_expiration_invalide",
+    }
+    attention_anomalies = {"document_expire", "doublon_dans_le_dossier", "type_probable_incompatible_avec_le_nom"}
+    if any(item in hard_anomalies for item in anomalies):
+        result = "bloque"
+        new_status = "a_corriger"
+    elif any(item in attention_anomalies for item in anomalies):
+        result = "attention"
+        new_status = "expire" if "document_expire" in anomalies else "a_corriger"
+    else:
+        result = "ok_technique"
+        new_status = "en_verification"
+
+    previous_level = row["verification_level"]
+    if not anomalies and previous_level in {"revue_humaine", "source_officielle"}:
+        new_status = row["statut"]
+        verification_level = previous_level
+    else:
+        verification_level = "controles_techniques"
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    connection.execute(
+        """
+        UPDATE application_documents
+        SET statut = ?, verification_level = ?, anomalies_json = ?, duplicate_of = ?,
+            checked_at = ?, verification_engine_version = ?, updated_at = datetime('now')
+        WHERE id = ? AND workspace_id = ?
+        """,
+        (
+            new_status,
+            verification_level,
+            json.dumps(anomalies, ensure_ascii=False),
+            duplicate["id"] if duplicate else None,
+            now,
+            DOCUMENT_VERIFICATION_ENGINE_VERSION,
+            row["id"],
+            row["workspace_id"],
+        ),
+    )
+    check_id = f"document-check-{uuid4().hex[:16]}"
+    connection.execute(
+        """
+        INSERT INTO application_document_checks(
+            id, workspace_id, application_id, document_id, result,
+            checks_json, anomalies_json, engine_version, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        """,
+        (
+            check_id,
+            row["workspace_id"],
+            row["application_id"],
+            row["id"],
+            result,
+            json.dumps(checks, ensure_ascii=False),
+            json.dumps(anomalies, ensure_ascii=False),
+            DOCUMENT_VERIFICATION_ENGINE_VERSION,
+        ),
+    )
+    updated_row = connection.execute(
+        "SELECT * FROM application_documents WHERE id = ? AND workspace_id = ?",
+        (row["id"], row["workspace_id"]),
+    ).fetchone()
+    check_row = connection.execute(
+        "SELECT * FROM application_document_checks WHERE id = ?",
+        (check_id,),
+    ).fetchone()
+    return updated_row, check_row
 
 
 def _completeness_followup_types(
@@ -3274,6 +3519,11 @@ def _promote_inbound_attachments(
             "UPDATE inbound_application_attachments SET application_document_id = ? WHERE id = ?",
             (document_id, row["id"]),
         )
+        inserted = connection.execute(
+            "SELECT * FROM application_documents WHERE id = ?",
+            (document_id,),
+        ).fetchone()
+        _document_preflight(connection, inserted)
         promoted += 1
     if promoted:
         _refresh_application_status(connection, workspace_id, application_id)
@@ -4052,6 +4302,11 @@ async def candidate_portal_upload_document(
                     expiration,
                 ),
             )
+            inserted = connection.execute(
+                "SELECT * FROM application_documents WHERE id = ?",
+                (document_id,),
+            ).fetchone()
+            _document_preflight(connection, inserted)
             _refresh_application_status(connection, access["workspace_id"], access["application_id"])
             connection.commit()
             row = connection.execute("SELECT * FROM application_documents WHERE id = ?", (document_id,)).fetchone()
@@ -4233,6 +4488,11 @@ async def upload_application_document(
                     expiration,
                 ),
             )
+            inserted = connection.execute(
+                "SELECT * FROM application_documents WHERE id = ?",
+                (document_id,),
+            ).fetchone()
+            _document_preflight(connection, inserted)
             _refresh_application_status(connection, owner.workspace_id, application_id)
             connection.commit()
             row = connection.execute(
@@ -4273,15 +4533,76 @@ def verify_application_document(
         connection.execute(
             """
             UPDATE application_documents
-            SET statut = ?, date_expiration = ?, note_verification = ?, updated_at = datetime('now')
+            SET statut = ?, date_expiration = ?, note_verification = ?,
+                verification_level = ?, anomalies_json = '[]', duplicate_of = NULL,
+                checked_at = ?, verification_engine_version = 'human-review-v1',
+                updated_at = datetime('now')
             WHERE id = ? AND workspace_id = ?
             """,
-            (payload.statut, expiration, note, document_id, owner.workspace_id),
+            (
+                payload.statut,
+                expiration,
+                note,
+                "revue_humaine" if payload.statut == "valide" else "non_verifie",
+                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                document_id,
+                owner.workspace_id,
+            ),
         )
         _refresh_application_status(connection, owner.workspace_id, application_id)
         connection.commit()
         row = _owned_application_document_row(connection, owner, property_id, application_id, document_id)
     return _application_document_from_row(row)
+
+
+@app.post(
+    "/api/biens/{property_id}/candidatures/{application_id}/pieces/{document_id}/analyser",
+    response_model=ApplicationDocumentAnalysisResult,
+)
+def analyze_application_document(
+    property_id: str,
+    application_id: str,
+    document_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> ApplicationDocumentAnalysisResult:
+    """Run local integrity, expiry and duplicate checks on one document."""
+
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        row = _owned_application_document_row(connection, owner, property_id, application_id, document_id)
+        updated_row, check_row = _document_preflight(connection, row)
+        _refresh_application_status(connection, owner.workspace_id, application_id)
+        connection.commit()
+    return ApplicationDocumentAnalysisResult(
+        document=_application_document_from_row(updated_row),
+        dernier_controle=_application_document_check_from_row(check_row),
+    )
+
+
+@app.get(
+    "/api/biens/{property_id}/candidatures/{application_id}/pieces/{document_id}/controles",
+    response_model=list[ApplicationDocumentCheck],
+)
+def list_application_document_checks(
+    property_id: str,
+    application_id: str,
+    document_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> list[ApplicationDocumentCheck]:
+    """List the technical checks performed on one document."""
+
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        _owned_application_document_row(connection, owner, property_id, application_id, document_id)
+        rows = connection.execute(
+            """
+            SELECT * FROM application_document_checks
+            WHERE workspace_id = ? AND application_id = ? AND document_id = ?
+            ORDER BY rowid
+            """,
+            (owner.workspace_id, application_id, document_id),
+        ).fetchall()
+    return [_application_document_check_from_row(row) for row in rows]
 
 
 @app.get(

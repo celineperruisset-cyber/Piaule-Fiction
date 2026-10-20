@@ -87,12 +87,16 @@ Les routes sont :
 - `GET /api/biens/{id}/candidatures/{application_id}/pieces` pour lister les pièces privées ;
 - `POST /api/biens/{id}/candidatures/{application_id}/pieces` pour déposer un PDF, JPG ou PNG de 100 Mo maximum par fichier ;
 - `PUT /api/biens/{id}/candidatures/{application_id}/pieces/{document_id}/verification` pour changer le statut de vérification ;
+- `POST /api/biens/{id}/candidatures/{application_id}/pieces/{document_id}/analyser` pour lancer les contrôles techniques ;
+- `GET /api/biens/{id}/candidatures/{application_id}/pieces/{document_id}/controles` pour consulter les contrôles effectués ;
 - `GET /api/biens/{id}/candidatures/{application_id}/completude` pour lire le résultat ;
 - `POST /api/biens/{id}/candidatures/{application_id}/verifier` pour recalculer et synchroniser le statut de la candidature.
 
-Une pièce conserve son type, sa provenance (`email`, `dossier_facile`, `portail_candidat`, `import` ou `autre`), son empreinte SHA-256, son statut et sa date d'expiration. Les statuts sont `recu`, `en_verification`, `valide`, `a_corriger`, `expire` et `refuse`.
+Une pièce conserve son type, sa provenance (`email`, `dossier_facile`, `portail_candidat`, `import` ou `autre`), son empreinte SHA-256, son statut et sa date d'expiration. Les statuts sont `recu`, `en_verification`, `valide`, `a_corriger`, `expire` et `refuse`. Elle conserve aussi le niveau de preuve (`non_verifie`, `controles_techniques`, `revue_humaine` ou `source_officielle`) et les anomalies détectées.
 
-Le moteur est déterministe : une pièce manquante produit `manquante`, une pièce reçue mais non vérifiée produit `en_verification`, une pièce valide produit `valide` et une pièce dépassée produit `expire`. Le score compte uniquement les cinq catégories requises. Un dossier DossierFacile officiellement vérifié peut couvrir ces catégories avec la mention `verifiee_par_dossier_facile`, sans recopier les documents originaux dans Piaule Fiction.
+Le moteur de pré-vérification est déterministe : il vérifie la présence du fichier, sa taille stockée, l'accord extension/MIME, sa signature PDF/JPG/PNG, sa date d'expiration, les doublons dans le dossier et une éventuelle incompatibilité probable entre le nom du fichier et la catégorie déclarée. Une anomalie bloque ou place la pièce `a_corriger`; un contrôle technique réussi la place `en_verification`, jamais `valide` automatiquement. Le moteur conserve chaque résultat et sa version.
+
+La pré-vérification locale ne certifie pas l'authenticité d'un document, l'identité du candidat, ses revenus ou l'absence de retouche. Ces éléments sont signalés comme `non_verifiable_localement` tant qu'aucun extracteur contrôlé, source officielle ou examinateur humain n'a fourni une preuve. Un dossier DossierFacile officiellement vérifié peut couvrir les catégories requises avec la mention `verifiee_par_dossier_facile`, sans recopier les documents originaux dans Piaule Fiction.
 
 Le dépôt exposé dans cette première tranche est protégé par la session propriétaire. Le lien candidat sécurisé et le dépôt autonome depuis l’espace candidat seront ajoutés sur cette même table, afin de ne pas créer un second modèle documentaire.
 
