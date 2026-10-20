@@ -1062,6 +1062,7 @@ class CandidatePortalView(BaseModel):
     bien_nom: str
     statut_candidature: ApplicationStatus
     completude: ApplicationCompleteness
+    verifications: list[ApplicationVerificationRequest] = Field(default_factory=list)
 
 
 class CandidateMessageCreate(BaseModel):
@@ -3487,6 +3488,16 @@ DOCUMENT_TYPE_FILENAME_HINTS: dict[str, tuple[str, ...]] = {
     "garant": ("garant", "caution"),
 }
 
+CONFIDENCE_VERIFICATION_SOURCES: dict[str, tuple[str, ...]] = {
+    "identite": ("france_identite", "dossier_facile", "revue_humaine"),
+    "domicile": ("dossier_facile", "revue_humaine"),
+    "situation_professionnelle": ("employeur", "dossier_facile", "revue_humaine"),
+    "ressources": ("employeur", "dossier_facile", "revue_humaine"),
+    "imposition": ("dgfip", "dossier_facile", "revue_humaine"),
+    "garant": ("dossier_facile", "revue_humaine"),
+    "autre": ("revue_humaine",),
+}
+
 
 def _normalise_document_name(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value or "")
@@ -3774,6 +3785,73 @@ def _refresh_application_status(
             reason=f"Complétude recalculée : {completeness.statut}.",
         )
     return completeness
+
+
+def _queue_specialized_agent_run(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    agent_type: str,
+    mission: str,
+    application_id: str,
+    property_id: str,
+    trigger: str,
+) -> str:
+    """Queue one idempotent specialized mission for a received application event."""
+
+    existing = connection.execute(
+        """
+        SELECT id FROM agent_runs
+        WHERE workspace_id = ? AND agent_type = ? AND target_id = ?
+          AND status IN ('queued', 'running')
+        ORDER BY created_at, id LIMIT 1
+        """,
+        (workspace_id, agent_type, application_id),
+    ).fetchone()
+    if existing is not None:
+        return existing["id"]
+
+    run_id = f"agent-run-{uuid4().hex[:16]}"
+    now = _iso_now()
+    connection.execute(
+        """
+        INSERT INTO agent_runs(
+            id, workspace_id, agent_type, mission, target_type, target_id,
+            status, input_json, output_json, evidence_json, error,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'candidature', ?, 'queued', ?, '{}', '[]', '', ?, ?)
+        """,
+        (
+            run_id,
+            workspace_id,
+            agent_type,
+            mission,
+            application_id,
+            _json_object(
+                {
+                    "property_id": property_id,
+                    "application_id": application_id,
+                    "declencheur": trigger,
+                },
+                label="L'entrée de la mission automatique",
+            ),
+            now,
+            now,
+        ),
+    )
+    _record_audit_event(
+        connection,
+        workspace_id=workspace_id,
+        actor_type="systeme",
+        actor_id="application-pipeline",
+        event_name="mission_specialisee_queued",
+        entity_type="agent_run",
+        entity_id=run_id,
+        application_id=application_id,
+        property_id=property_id,
+        metadata={"agent_type": agent_type, "declencheur": trigger},
+    )
+    return run_id
 
 
 def _owned_application_channel_row(
@@ -5268,10 +5346,15 @@ def process_next_completeness_run(request: Request) -> AgentWorkerProcessResult:
     error = ""
     try:
         if not property_id or not application_id:
-            raise HTTPException(
-                status_code=422,
-                detail="Une mission de complétude doit indiquer property_id et application_id.",
-            )
+            with closing(_connect()) as lookup_connection:
+                application_row = lookup_connection.execute(
+                    "SELECT property_id FROM owner_applications WHERE id = ? AND workspace_id = ?",
+                    (application_id, row["workspace_id"]),
+                ).fetchone()
+            if application_row is not None:
+                property_id = property_id or application_row["property_id"]
+        if not property_id or not application_id:
+            raise HTTPException(status_code=422, detail="Une mission de complétude doit indiquer une candidature rattachée à un bien.")
         followup = agent_request_missing_documents(property_id, application_id, worker_owner)
     except HTTPException as exc:
         error = str(exc.detail)
@@ -5329,6 +5412,186 @@ def process_next_completeness_run(request: Request) -> AgentWorkerProcessResult:
         statut=status_value,
         message_reponse_id=followup.message_id if followup else None,
     )
+
+
+@app.post("/api/internal/agent-runs/process-next-confiance", response_model=AgentWorkerProcessResult)
+def process_next_confidence_run(request: Request) -> AgentWorkerProcessResult:
+    """Execute one trust mission and prepare consent-gated proof requests."""
+
+    _agent_internal_auth(request)
+    with closing(_connect()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            """
+            SELECT * FROM agent_runs
+            WHERE status = 'queued' AND agent_type = 'agent-confiance'
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            connection.commit()
+            return AgentWorkerProcessResult(traite=False)
+        now = _iso_now()
+        connection.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'running', started_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'queued'
+            """,
+            (now, now, row["id"]),
+        )
+        connection.commit()
+
+    input_data = json.loads(row["input_json"] or "{}")
+    property_id = str(input_data.get("property_id") or input_data.get("bien_id") or "").strip()
+    application_id = str(input_data.get("application_id") or input_data.get("candidature_id") or row["target_id"] or "").strip()
+    error = ""
+    output: dict[str, object] = {
+        "mode": "worker_confiance",
+        "property_id": property_id,
+        "application_id": application_id,
+        "niveau_global": "non_verifie",
+        "documents_analyses": [],
+        "demandes_verification": [],
+        "prochaines_actions": [],
+    }
+    try:
+        with closing(_connect()) as connection:
+            application = connection.execute(
+                "SELECT * FROM owner_applications WHERE id = ? AND workspace_id = ?",
+                (application_id, row["workspace_id"]),
+            ).fetchone()
+            if application is None:
+                raise HTTPException(status_code=404, detail="Candidature introuvable pour la mission de confiance.")
+            property_id = property_id or application["property_id"]
+            property_row = connection.execute(
+                "SELECT * FROM properties WHERE id = ? AND workspace_id = ?",
+                (property_id, row["workspace_id"]),
+            ).fetchone()
+            if property_row is None:
+                raise HTTPException(status_code=404, detail="Bien introuvable pour la mission de confiance.")
+            documents = connection.execute(
+                """
+                SELECT * FROM application_documents
+                WHERE workspace_id = ? AND application_id = ?
+                ORDER BY created_at, id
+                """,
+                (row["workspace_id"], application_id),
+            ).fetchall()
+            analyses: list[dict[str, object]] = []
+            verification_requests: list[dict[str, object]] = []
+            has_blocking = False
+            has_attention = False
+            has_unproven = False
+            for document in documents:
+                updated_document, check = _document_preflight(connection, document)
+                check_anomalies = json.loads(check["anomalies_json"] or "[]")
+                has_blocking = has_blocking or check["result"] == "bloque"
+                has_attention = has_attention or check["result"] == "attention"
+                has_unproven = has_unproven or updated_document["verification_level"] not in {
+                    "source_partenaire",
+                    "source_officielle",
+                }
+                analyses.append(
+                    {
+                        "document_id": updated_document["id"],
+                        "type": updated_document["document_type"],
+                        "resultat": check["result"],
+                        "anomalies": check_anomalies,
+                        "niveau_preuve": updated_document["verification_level"],
+                    }
+                )
+                if check["result"] in {"ok_technique", "attention"}:
+                    verification_request = _prepare_confidence_verification_request(
+                        connection,
+                        workspace_id=row["workspace_id"],
+                        property_id=property_id,
+                        application_id=application_id,
+                        document=updated_document,
+                        policy=property_row["verification_policy"] or "standard",
+                    )
+                    if verification_request is not None:
+                        verification_requests.append(
+                            {
+                                "id": verification_request["id"],
+                                "document_id": verification_request["document_id"],
+                                "source": verification_request["source"],
+                                "statut": verification_request["status"],
+                            }
+                        )
+            completeness = _refresh_application_status(connection, row["workspace_id"], application_id)
+            if not documents:
+                niveau_global = "aucune_piece"
+            elif has_blocking:
+                niveau_global = "bloque"
+            elif has_attention:
+                niveau_global = "a_verifier"
+            elif has_unproven:
+                niveau_global = "coherent_techniquement_non_authentifie"
+            else:
+                niveau_global = "preuve_externe_recue"
+            if verification_requests:
+                output["prochaines_actions"] = ["obtenir_consentement_candidat", "attendre_source_externe"]
+            elif has_blocking or has_attention:
+                output["prochaines_actions"] = ["corriger_ou_revoir_les_pieces"]
+            elif completeness.statut != "complet":
+                output["prochaines_actions"] = ["completer_le_dossier"]
+            output.update(
+                {
+                    "property_id": property_id,
+                    "niveau_global": niveau_global,
+                    "documents_analyses": analyses,
+                    "demandes_verification": verification_requests,
+                    "completude": json.loads(completeness.model_dump_json()),
+                    "limite": "Les contrôles locaux ne prouvent pas l'authenticité sans source externe ou revue humaine.",
+                }
+            )
+            connection.commit()
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except Exception as exc:  # pragma: no cover - defensive worker boundary
+        error = str(exc)
+
+    now = _iso_now()
+    status_value: AgentRunStatus = "failed" if error else "completed"
+    if error:
+        output["erreur"] = error
+    with closing(_connect()) as connection:
+        connection.execute(
+            """
+            UPDATE agent_runs
+            SET status = ?, output_json = ?, evidence_json = ?, error = ?,
+                finished_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'running'
+            """,
+            (
+                status_value,
+                _json_object(output, label="La sortie de l'Agent Confiance"),
+                _json_object(
+                    [{"type": "document_checks", "count": len(output.get("documents_analyses", []))}],
+                    label="Les preuves de la mission de confiance",
+                ),
+                _clean_text(error, 4000),
+                now,
+                now,
+                row["id"],
+            ),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=row["workspace_id"],
+            actor_type="agent",
+            actor_id="agent-confiance",
+            event_name="mission_confiance_executee" if not error else "mission_confiance_echouee",
+            entity_type="agent_run",
+            entity_id=row["id"],
+            application_id=application_id or None,
+            property_id=property_id or None,
+            metadata={"statut": status_value, "niveau_global": output.get("niveau_global"), "erreur": error},
+        )
+        connection.commit()
+    return AgentWorkerProcessResult(traite=True, run_id=row["id"], statut=status_value)
 
 
 @app.get("/api/agent-runs", response_model=list[AgentRun])
@@ -6767,6 +7030,24 @@ def _promote_inbound_attachments(
         promoted += 1
     if promoted:
         _refresh_application_status(connection, workspace_id, application_id)
+        _queue_specialized_agent_run(
+            connection,
+            workspace_id=workspace_id,
+            agent_type="agent-completude",
+            mission="Recalculer la complétude après réception d'une pièce par e-mail.",
+            application_id=application_id,
+            property_id=property_id,
+            trigger="piece_recue_email",
+        )
+        _queue_specialized_agent_run(
+            connection,
+            workspace_id=workspace_id,
+            agent_type="agent-confiance",
+            mission="Réexaminer les pièces reçues après une réponse par e-mail.",
+            application_id=application_id,
+            property_id=property_id,
+            trigger="piece_recue_email",
+        )
     return promoted
 
 
@@ -7437,12 +7718,23 @@ def candidate_portal_view(token: str) -> CandidatePortalView:
         completeness = _application_completeness(
             connection, access["workspace_id"], access["application_id"]
         )
+        verification_rows = connection.execute(
+            """
+            SELECT * FROM application_verification_requests
+            WHERE workspace_id = ? AND application_id = ?
+              AND status IN ('en_attente_consentement', 'en_attente_source')
+              AND expires_at > datetime('now')
+            ORDER BY created_at DESC, id DESC
+            """,
+            (access["workspace_id"], access["application_id"]),
+        ).fetchall()
     return CandidatePortalView(
         candidature_id=access["application_id"],
         candidat_prenom=access["candidat_prenom"],
         bien_nom=access["bien_nom"],
         statut_candidature=access["candidature_statut"],
         completude=completeness,
+        verifications=[_application_verification_request_from_row(row) for row in verification_rows],
     )
 
 
@@ -7621,6 +7913,24 @@ async def candidate_portal_upload_document(
             ).fetchone()
             _document_preflight(connection, inserted)
             _refresh_application_status(connection, access["workspace_id"], access["application_id"])
+            _queue_specialized_agent_run(
+                connection,
+                workspace_id=access["workspace_id"],
+                agent_type="agent-completude",
+                mission="Recalculer la complétude après dépôt d'une pièce par le candidat.",
+                application_id=access["application_id"],
+                property_id=access["property_id"],
+                trigger="piece_recue_portail",
+            )
+            _queue_specialized_agent_run(
+                connection,
+                workspace_id=access["workspace_id"],
+                agent_type="agent-confiance",
+                mission="Analyser une nouvelle pièce déposée par le candidat.",
+                application_id=access["application_id"],
+                property_id=access["property_id"],
+                trigger="piece_recue_portail",
+            )
             connection.commit()
             row = connection.execute("SELECT * FROM application_documents WHERE id = ?", (document_id,)).fetchone()
     except Exception:
@@ -7807,6 +8117,24 @@ async def upload_application_document(
             ).fetchone()
             _document_preflight(connection, inserted)
             _refresh_application_status(connection, owner.workspace_id, application_id)
+            _queue_specialized_agent_run(
+                connection,
+                workspace_id=owner.workspace_id,
+                agent_type="agent-completude",
+                mission="Recalculer la complétude après ajout d'une pièce au dossier.",
+                application_id=application_id,
+                property_id=property_id,
+                trigger="piece_recue_workspace",
+            )
+            _queue_specialized_agent_run(
+                connection,
+                workspace_id=owner.workspace_id,
+                agent_type="agent-confiance",
+                mission="Analyser une nouvelle pièce ajoutée au dossier.",
+                application_id=application_id,
+                property_id=property_id,
+                trigger="piece_recue_workspace",
+            )
             connection.commit()
             row = connection.execute(
                 "SELECT * FROM application_documents WHERE id = ?",
@@ -7920,6 +8248,84 @@ def list_application_document_checks(
 
 def _verification_source_allowed(policy: str, source: str) -> bool:
     return source in VERIFICATION_POLICY_SOURCES.get(policy, [])
+
+
+def _confidence_source_for_policy(policy: str, document_type: str) -> str | None:
+    """Choose the strongest available source without pretending it is connected."""
+
+    if policy == "standard":
+        return None
+    for source in CONFIDENCE_VERIFICATION_SOURCES.get(document_type, ("revue_humaine",)):
+        if _verification_source_allowed(policy, source):
+            return source
+    return None
+
+
+def _prepare_confidence_verification_request(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    property_id: str,
+    application_id: str,
+    document: sqlite3.Row,
+    policy: str,
+) -> sqlite3.Row | None:
+    """Prepare one candidate-consent request for a document needing stronger proof."""
+
+    source = _confidence_source_for_policy(policy, document["document_type"])
+    if source is None:
+        return None
+    if document["verification_level"] in {"source_partenaire", "source_officielle"}:
+        return None
+    existing = connection.execute(
+        """
+        SELECT * FROM application_verification_requests
+        WHERE workspace_id = ? AND application_id = ? AND document_id = ?
+          AND source = ?
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (workspace_id, application_id, document["id"], source),
+    ).fetchone()
+    if existing is not None and existing["status"] in {
+        "en_attente_consentement",
+        "en_attente_source",
+        "confirmee",
+        "non_confirmee",
+        "annulee",
+    }:
+        return existing
+    request_id = f"verification-request-{uuid4().hex[:16]}"
+    motif = (
+        "Confirmer l'identité du candidat par une source reconnue."
+        if document["document_type"] == "identite"
+        else f"Renforcer la vérification de la pièce « {DOCUMENT_TYPE_LABELS.get(document['document_type'], document['document_type'])} »."
+    )
+    connection.execute(
+        """
+        INSERT INTO application_verification_requests(
+            id, workspace_id, application_id, document_id, source, status,
+            motif, evidence_json, result_summary, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'en_attente_consentement', ?, '{}',
+                  'Consentement du candidat requis.', datetime('now', '+30 days'),
+                  datetime('now'), datetime('now'))
+        """,
+        (request_id, workspace_id, application_id, document["id"], source, motif),
+    )
+    _record_audit_event(
+        connection,
+        workspace_id=workspace_id,
+        actor_type="agent",
+        actor_id="agent-confiance",
+        event_name="verification_officielle_preparee",
+        entity_type="verification_request",
+        entity_id=request_id,
+        property_id=property_id,
+        application_id=application_id,
+        metadata={"document_id": document["id"], "source": source, "consentement_requis": True},
+    )
+    return connection.execute(
+        "SELECT * FROM application_verification_requests WHERE id = ?", (request_id,)
+    ).fetchone()
 
 
 @app.post(

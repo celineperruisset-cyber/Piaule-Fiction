@@ -386,6 +386,70 @@ def test_completeness_worker_queues_direct_candidate_email_for_missing_documents
         assert run_state.json()["sortie"]["followup"]["pieces_demandees"]
 
 
+def test_received_piece_requeues_completeness_and_confidence_workers():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.AGENT_INTERNAL_TOKEN = "agent-test-token"
+        owner = TestClient(main.app)
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "pipeline-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert created.status_code == 200
+        property_response = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien pipeline confiance",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue du pipeline",
+                "ville": "Lyon",
+                "politique_verification": "officielle",
+            },
+        )
+        property_id = property_response.json()["id"]
+        application = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Pipeline",
+                "candidat_email": "alex-pipeline@example.test",
+            },
+        )
+        application_id = application.json()["id"]
+        link = owner.post(f"/api/biens/{property_id}/candidatures/{application_id}/lien-candidat")
+        token = link.json()["url"].split("?access=", 1)[1]
+
+        uploaded = owner.post(
+            f"/api/candidature-acces/{token}/pieces",
+            data={"nom": "Pièce d'identité", "type": "identite"},
+            files={"file": ("identite.pdf", b"%PDF-pipeline", "application/pdf")},
+        )
+        assert uploaded.status_code == 201
+
+        runs = owner.get("/api/agent-runs").json()
+        queued_types = {run["type_agent"] for run in runs if run["statut"] == "queued"}
+        assert {"agent-completude", "agent-confiance"}.issubset(queued_types)
+
+        confidence = owner.post(
+            "/api/internal/agent-runs/process-next-confiance",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+        )
+        assert confidence.status_code == 200
+        assert confidence.json()["statut"] == "completed"
+
+        portal = owner.get(f"/api/candidature-acces/{token}")
+        assert portal.status_code == 200
+        assert portal.json()["verifications"][0]["source"] == "france_identite"
+        assert portal.json()["verifications"][0]["statut"] == "en_attente_consentement"
+
+
 def test_calendar_connection_sync_blocks_conflicting_visit_slot():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
