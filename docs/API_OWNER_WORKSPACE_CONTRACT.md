@@ -11,6 +11,7 @@ workspace
   │     ├── documents
   │     └── completeness / coherence findings
   ├── agent runs
+  ├── private agent team / orchestrator messages
   ├── actions / approvals
   ├── visits
   └── audit events
@@ -21,6 +22,18 @@ workspace
 Toutes les ressources portent un `workspace_id`. Une candidature porte aussi un `property_id`. Un document ne devient jamais accessible uniquement parce qu’un modèle l’a reconnu : le rôle, le rattachement, le consentement et la durée d’accès sont vérifiés par l’API.
 
 Les agents écrivent des propositions et des preuves. Les transmissions externes passent par `actions`, avec un aperçu immuable, une autorisation, une idempotence et un événement d’audit.
+
+## Équipe privée du propriétaire
+
+Chaque création de compte provisionne le même catalogue fonctionnel d'agents dans une instance propre au workspace : Orchestrateur, Bien, Candidatures, Complétude, Confiance, Comparaison, Visites, Communication, Conformité et Suivi. Le catalogue décrit les responsabilités ; l'identifiant, les missions, les messages et les futures mémoires restent isolés par `workspace_id`.
+
+Le propriétaire consulte l'équipe avec `GET /api/agents`. L'Orchestrateur est son point de contact :
+
+- `POST /api/agents/orchestrateur/messages` reçoit une demande et crée une mission `queued` ;
+- `GET /api/agents/orchestrateur/messages` relit les demandes et réponses ;
+- `GET /api/agents/{agent_id}` affiche un agent de son propre workspace.
+
+Une demande est conservée dans `agent_messages`, rattachée à `agent_runs` et auditée. La réponse IA n'est pas fabriquée par cette route : un worker d'orchestration devra consommer la mission, appeler le fournisseur autorisé, produire les preuves et écrire la réponse. Le propriétaire peut donc déjà voir la présence de son équipe et lui parler depuis le frontend, sans exposer de mission ou de donnée d'un autre workspace.
 
 ## Première tranche
 

@@ -55,6 +55,81 @@ def test_owner_account_creates_isolated_workspace_and_metadata():
         assert anonymous.get("/api/workspace").status_code == 401
 
 
+def test_owner_gets_private_agent_team_and_can_contact_orchestrator():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        first = TestClient(main.app)
+        second = TestClient(main.app)
+
+        first_created = first.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner One",
+                "email": "team-one@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        second_created = second.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner Two",
+                "email": "team-two@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert first_created.status_code == 200
+        assert second_created.status_code == 200
+
+        first_agents = first.get("/api/agents")
+        second_agents = second.get("/api/agents")
+        assert first_agents.status_code == 200
+        assert second_agents.status_code == 200
+        assert len(first_agents.json()) == len(main.OWNER_AGENT_CATALOG) == 10
+        assert {agent["role"] for agent in first_agents.json()} == set(main.OWNER_AGENT_CATALOG)
+        assert [agent["nom"] for agent in first_agents.json()][0] == "Orchestrateur"
+        assert {agent["workspace_id"] for agent in first_agents.json()} == {
+            first_created.json()["workspace_id"]
+        }
+        assert {agent["workspace_id"] for agent in second_agents.json()} == {
+            second_created.json()["workspace_id"]
+        }
+        assert {agent["id"] for agent in first_agents.json()}.isdisjoint(
+            {agent["id"] for agent in second_agents.json()}
+        )
+
+        message = first.post(
+            "/api/agents/orchestrateur/messages",
+            json={
+                "contenu": "Prépare-moi le prochain plan pour mon premier bien.",
+                "contexte_type": "bien",
+                "contexte_id": "bien-demo",
+            },
+        )
+        assert message.status_code == 201
+        assert message.json()["agent_role"] == "orchestrateur"
+        assert message.json()["statut"] == "a_traiter"
+        assert message.json()["run_id"]
+
+        messages = first.get("/api/agents/orchestrateur/messages")
+        assert messages.status_code == 200
+        assert messages.json()[0]["contenu"].startswith("Prépare-moi")
+        assert second.get("/api/agents/orchestrateur/messages").json() == []
+
+        runs = first.get("/api/agent-runs")
+        assert runs.status_code == 200
+        assert runs.json()[0]["type_agent"] == "orchestrateur"
+        audit = first.get(
+            "/api/audit",
+            params={"entite_type": "agent_message", "entite_id": message.json()["id"]},
+        )
+        assert audit.status_code == 200
+        assert audit.json()[0]["evenement"] == "demande_orchestrateur_recue"
+
+
 def test_verification_policy_and_external_proof_are_consent_gated():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

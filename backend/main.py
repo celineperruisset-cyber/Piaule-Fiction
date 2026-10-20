@@ -153,7 +153,9 @@ ActionDecision = Literal["autorisee", "refusee"]
 # only an action that belongs to its role; the owner approval gate remains a
 # separate boundary for sensitive actions.
 AGENT_SCOPE_POLICIES: dict[str, set[str]] = {
+    "orchestrateur": {"distribuer_mission", "preparer_plan"},
     "agent-bien": {"analyser_bien", "preparer_annonce"},
+    "agent-candidatures": {"analyser_candidature", "rattacher_candidature", "dedoublonner_candidature"},
     "agent-completude": {
         "analyser_piece",
         "recalculer_completude",
@@ -161,9 +163,77 @@ AGENT_SCOPE_POLICIES: dict[str, set[str]] = {
         "preparer_relance_completude",
     },
     "agent-dossier": {"analyser_piece", "recalculer_completude", "preparer_verification"},
+    "agent-confiance": {"analyser_piece", "preparer_verification", "signaler_anomalie"},
     "agent-comparaison": {"comparer_candidatures", "preparer_recommandation"},
     "agent-visites": {"proposer_visite", "preparer_rappel_visite"},
+    "agent-communication": {"preparer_message_candidat", "preparer_rappel_visite"},
+    "agent-conformite": {"controler_conformite", "signaler_anomalie"},
     "agent-suivi": {"preparer_tache", "preparer_relance_echeance"},
+}
+
+# Catalogue visible par le propriétaire. Les lignes sont des rôles provisionnés
+# dans chaque workspace ; elles ne donnent aucun accès entre workspaces.
+OWNER_AGENT_CATALOG: dict[str, dict[str, object]] = {
+    "orchestrateur": {
+        "nom": "Orchestrateur",
+        "description": "Point de contact principal du propriétaire.",
+        "mission": "Comprendre la demande, distribuer le travail et faire remonter les exceptions.",
+        "principal": True,
+    },
+    "agent-bien": {
+        "nom": "Agent Bien",
+        "description": "Structure les biens, lots et informations manquantes.",
+        "mission": "Préparer une fiche bien exploitable et relever les champs à compléter.",
+        "principal": False,
+    },
+    "agent-candidatures": {
+        "nom": "Agent Candidatures",
+        "description": "Rattache, organise et dédoublonne les dossiers reçus.",
+        "mission": "Associer chaque candidature au bon bien et conserver sa provenance.",
+        "principal": False,
+    },
+    "agent-completude": {
+        "nom": "Agent Complétude",
+        "description": "Suit les pièces reçues, manquantes et à corriger.",
+        "mission": "Calculer l'état du dossier et préparer une demande ciblée au candidat.",
+        "principal": False,
+    },
+    "agent-confiance": {
+        "nom": "Agent Confiance",
+        "description": "Analyse les documents et sépare les contrôles des preuves officielles.",
+        "mission": "Relever les anomalies, incohérences et contrôles à approfondir.",
+        "principal": False,
+    },
+    "agent-comparaison": {
+        "nom": "Agent Comparaison",
+        "description": "Compare les dossiers avec les critères définis pour le bien.",
+        "mission": "Préparer une synthèse explicable avec faits, preuves et inconnues.",
+        "principal": False,
+    },
+    "agent-visites": {
+        "nom": "Agent Visites",
+        "description": "Prépare les créneaux et le suivi des rendez-vous.",
+        "mission": "Proposer des créneaux compatibles sans confirmer à la place du propriétaire.",
+        "principal": False,
+    },
+    "agent-communication": {
+        "nom": "Agent Communication",
+        "description": "Prépare les messages liés aux candidatures et aux visites.",
+        "mission": "Rédiger des messages précis qui restent soumis aux permissions configurées.",
+        "principal": False,
+    },
+    "agent-conformite": {
+        "nom": "Agent Conformité",
+        "description": "Contrôle les règles et bloque les demandes hors périmètre.",
+        "mission": "Signaler les risques réglementaires, les pièces disproportionnées et les exceptions.",
+        "principal": False,
+    },
+    "agent-suivi": {
+        "nom": "Agent Suivi",
+        "description": "Surveille les prochaines échéances et les tâches ouvertes.",
+        "mission": "Préparer les rappels et faire remonter les éléments qui nécessitent une décision.",
+        "principal": False,
+    },
 }
 
 
@@ -198,6 +268,44 @@ class AgentRunStatusUpdate(BaseModel):
     sortie: dict[str, object] = Field(default_factory=dict)
     preuves: list[dict[str, object]] = Field(default_factory=list)
     erreur: str = Field(default="", max_length=4000)
+
+
+AgentStatus = Literal["active", "paused"]
+AgentMessageDirection = Literal["proprietaire", "agent"]
+AgentMessageStatus = Literal["a_traiter", "en_cours", "repondu", "archive"]
+
+
+class OwnerAgent(BaseModel):
+    id: str
+    workspace_id: str
+    role: str
+    nom: str
+    description: str
+    mission: str
+    statut: AgentStatus
+    principal: bool
+    version_politique: str
+    created_at: str
+    updated_at: str
+
+
+class OwnerAgentMessageCreate(BaseModel):
+    contenu: str = Field(min_length=2, max_length=4000)
+    contexte_type: str = Field(default="", max_length=80)
+    contexte_id: str = Field(default="", max_length=160)
+
+
+class OwnerAgentMessage(BaseModel):
+    id: str
+    workspace_id: str
+    agent_id: str
+    agent_role: str
+    direction: AgentMessageDirection
+    contenu: str
+    statut: AgentMessageStatus
+    run_id: str | None = None
+    created_at: str
+    updated_at: str
 
 
 class ActionCreate(BaseModel):
@@ -1344,6 +1452,41 @@ def _ensure_database() -> None:
                 FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS agent_runs_workspace_idx ON agent_runs(workspace_id, created_at);
+            CREATE TABLE IF NOT EXISTS workspace_agents (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                role_key TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                mission TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                is_primary INTEGER NOT NULL DEFAULT 0,
+                policy_version TEXT NOT NULL DEFAULT 'v1',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(workspace_id, role_key),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS workspace_agents_workspace_idx
+                ON workspace_agents(workspace_id, is_primary DESC, created_at);
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                agent_run_id TEXT,
+                direction TEXT NOT NULL,
+                content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'a_traiter',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(agent_id) REFERENCES workspace_agents(id) ON DELETE CASCADE,
+                FOREIGN KEY(agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS agent_messages_workspace_idx
+                ON agent_messages(workspace_id, created_at);
+            CREATE INDEX IF NOT EXISTS agent_messages_agent_idx
+                ON agent_messages(agent_id, created_at);
             CREATE TABLE IF NOT EXISTS actions (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -1598,6 +1741,8 @@ def _ensure_database() -> None:
                 "INSERT OR IGNORE INTO workspace_members(workspace_id, email, role, joined_at) VALUES (?, ?, 'owner', datetime('now'))",
                 (workspace_id, account["email"]),
             )
+        for workspace in connection.execute("SELECT id FROM workspaces").fetchall():
+            _provision_workspace_agents(connection, workspace[0])
         for listing in demo_listings():
             connection.execute(
                 """
@@ -1980,6 +2125,63 @@ def _create_workspace(connection: sqlite3.Connection, email: str, prenom: str) -
     return workspace_id
 
 
+def _provision_workspace_agents(connection: sqlite3.Connection, workspace_id: str) -> None:
+    """Create the standard owner team once, without sharing instances across owners."""
+
+    now = _iso_now()
+    for role_key, definition in OWNER_AGENT_CATALOG.items():
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO workspace_agents(
+                id, workspace_id, role_key, display_name, description, mission,
+                status, is_primary, policy_version, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, 'v1', ?, ?)
+            """,
+            (
+                f"agent-{uuid4().hex[:16]}",
+                workspace_id,
+                role_key,
+                str(definition["nom"]),
+                str(definition["description"]),
+                str(definition["mission"]),
+                1 if definition["principal"] else 0,
+                now,
+                now,
+            ),
+        )
+
+
+def _owner_agent_from_row(row: sqlite3.Row) -> OwnerAgent:
+    return OwnerAgent(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        role=row["role_key"],
+        nom=row["display_name"],
+        description=row["description"],
+        mission=row["mission"],
+        statut=row["status"],
+        principal=bool(row["is_primary"]),
+        version_politique=row["policy_version"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _owner_agent_message_from_row(row: sqlite3.Row) -> OwnerAgentMessage:
+    return OwnerAgentMessage(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        agent_id=row["agent_id"],
+        agent_role=row["role_key"],
+        direction=row["direction"],
+        contenu=row["content"],
+        statut=row["status"],
+        run_id=row["agent_run_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
 def _google_is_configured() -> bool:
     return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI)
 
@@ -2058,6 +2260,7 @@ def _find_or_create_google_owner(subject: str, email: str, prenom: str) -> tuple
                 "INSERT OR IGNORE INTO workspace_members(workspace_id, email, role, joined_at) VALUES (?, ?, 'owner', datetime('now'))",
                 (workspace_id, email),
             )
+            _provision_workspace_agents(connection, workspace_id)
             connection.commit()
             return prenom, email, workspace_id
 
@@ -2074,6 +2277,7 @@ def _find_or_create_google_owner(subject: str, email: str, prenom: str) -> tuple
             "INSERT OR IGNORE INTO workspace_members(workspace_id, email, role, joined_at) VALUES (?, ?, 'owner', datetime('now'))",
             (workspace_id, email),
         )
+        _provision_workspace_agents(connection, workspace_id)
         connection.commit()
         return row["prenom"], email, workspace_id
 
@@ -3532,6 +3736,7 @@ def account(payload: AccountRequest, request: Request, response: Response) -> di
                 "INSERT INTO workspace_members(workspace_id, email, role, joined_at) VALUES (?, ?, 'owner', datetime('now'))",
                 (workspace_id, email),
             )
+            _provision_workspace_agents(connection, workspace_id)
         else:
             if row is None:
                 return JSONResponse(
@@ -3736,6 +3941,137 @@ def update_workspace(
         owner_email=workspace.owner_email,
         created_at=workspace.created_at,
     )
+
+
+@app.get("/api/agents", response_model=list[OwnerAgent])
+def list_owner_agents(owner: Candidate = Depends(current_candidate)) -> list[OwnerAgent]:
+    """Return the standard, workspace-isolated team visible to the owner."""
+
+    with closing(_connect()) as connection:
+        _provision_workspace_agents(connection, owner.workspace_id)
+        connection.commit()
+        rows = connection.execute(
+            """
+            SELECT * FROM workspace_agents
+            WHERE workspace_id = ?
+            ORDER BY is_primary DESC, created_at ASC, role_key ASC
+            """,
+            (owner.workspace_id,),
+        ).fetchall()
+    return [_owner_agent_from_row(row) for row in rows]
+
+
+@app.get("/api/agents/orchestrateur/messages", response_model=list[OwnerAgentMessage])
+def list_orchestrator_messages(
+    limit: int = 50,
+    owner: Candidate = Depends(current_candidate),
+) -> list[OwnerAgentMessage]:
+    """List the owner's conversation with the workspace orchestrator."""
+
+    safe_limit = max(1, min(limit, 100))
+    with closing(_connect()) as connection:
+        _provision_workspace_agents(connection, owner.workspace_id)
+        rows = connection.execute(
+            """
+            SELECT m.*, a.role_key
+            FROM agent_messages m
+            JOIN workspace_agents a ON a.id = m.agent_id
+            WHERE m.workspace_id = ? AND a.role_key = 'orchestrateur'
+            ORDER BY m.created_at DESC, m.id DESC
+            LIMIT ?
+            """,
+            (owner.workspace_id, safe_limit),
+        ).fetchall()
+    return [_owner_agent_message_from_row(row) for row in reversed(rows)]
+
+
+@app.post("/api/agents/orchestrateur/messages", response_model=OwnerAgentMessage, status_code=201)
+def send_orchestrator_message(
+    payload: OwnerAgentMessageCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> OwnerAgentMessage:
+    """Record a mission for the orchestrator; a worker will process it later."""
+
+    content = _clean_text(payload.contenu, 4000)
+    if len(content) < 2:
+        raise HTTPException(status_code=422, detail="La demande au Orchestrateur est trop courte.")
+    now = _iso_now()
+    message_id = f"agent-message-{uuid4().hex[:16]}"
+    run_id = f"agent-run-{uuid4().hex[:16]}"
+    with closing(_connect()) as connection:
+        _provision_workspace_agents(connection, owner.workspace_id)
+        agent = connection.execute(
+            "SELECT * FROM workspace_agents WHERE workspace_id = ? AND role_key = 'orchestrateur'",
+            (owner.workspace_id,),
+        ).fetchone()
+        if agent is None:
+            raise HTTPException(status_code=503, detail="L'équipe d'agents n'est pas disponible.")
+        context = {
+            "message_id": message_id,
+            "contexte_type": _clean_text(payload.contexte_type, 80),
+            "contexte_id": _clean_text(payload.contexte_id, 160),
+        }
+        connection.execute(
+            """
+            INSERT INTO agent_runs(
+                id, workspace_id, agent_type, mission, target_type, target_id,
+                status, input_json, output_json, evidence_json, error,
+                created_at, updated_at
+            ) VALUES (?, ?, 'orchestrateur', ?, 'workspace', ?, 'queued', ?, '{}', '[]', '', ?, ?)
+            """,
+            (
+                run_id,
+                owner.workspace_id,
+                "Traiter la demande du propriétaire et préparer le prochain plan d'action.",
+                owner.workspace_id,
+                _json_object({"contenu": content, **context}, label="L'entrée de la mission"),
+                now,
+                now,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO agent_messages(
+                id, workspace_id, agent_id, agent_run_id, direction, content,
+                status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'proprietaire', ?, 'a_traiter', ?, ?)
+            """,
+            (message_id, owner.workspace_id, agent["id"], run_id, content, now, now),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="demande_orchestrateur_recue",
+            entity_type="agent_message",
+            entity_id=message_id,
+            metadata={"run_id": run_id, **context},
+        )
+        connection.commit()
+        row = connection.execute(
+            """
+            SELECT m.*, a.role_key
+            FROM agent_messages m
+            JOIN workspace_agents a ON a.id = m.agent_id
+            WHERE m.id = ? AND m.workspace_id = ?
+            """,
+            (message_id, owner.workspace_id),
+        ).fetchone()
+    return _owner_agent_message_from_row(row)
+
+
+@app.get("/api/agents/{agent_id}", response_model=OwnerAgent)
+def get_owner_agent(agent_id: str, owner: Candidate = Depends(current_candidate)) -> OwnerAgent:
+    with closing(_connect()) as connection:
+        _provision_workspace_agents(connection, owner.workspace_id)
+        row = connection.execute(
+            "SELECT * FROM workspace_agents WHERE id = ? AND workspace_id = ?",
+            (agent_id, owner.workspace_id),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Agent introuvable dans ce workspace.")
+    return _owner_agent_from_row(row)
 
 
 @app.get("/api/agent-runs", response_model=list[AgentRun])

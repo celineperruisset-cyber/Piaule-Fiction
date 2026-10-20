@@ -9,6 +9,7 @@ Cette API devient le socle du workspace propriétaire. Le slice historique compt
 - `application` rattachée à un bien et à une source ;
 - `document` avec statut, provenance et accès ;
 - `agent_run`, `action`, `approval` et `audit_event` ;
+- `workspace_agent` et `agent_message` pour l'équipe privée du propriétaire ;
 - `visit` et disponibilités ;
 - `connector` avec permissions et révocation.
 
@@ -30,6 +31,12 @@ PIAULE_STATE_DIRECTORY=.local-state uvicorn backend.main:app --reload --port 800
 Routes de socle actuellement conservées : `GET /health`, compte/session, profil, documents privés et source synthétique. Le premier bloc propriétaire est maintenant disponible : `GET /api/workspace`, `PUT /api/workspace`, `GET /api/workspace/membres`, les routes `/api/biens`, les routes `/api/biens/{id}/lots`, les routes `/api/biens/{id}/suivis`, `GET /api/echeances`, `GET /api/candidatures` et les routes `/api/biens/{id}/candidatures`. La réception est préparée avec les routes `/api/biens/{id}/canaux-candidatures`, `GET /api/candidatures/inbox`, le webhook interne `/api/internal/candidatures/inbound` et l’association `/api/candidatures/inbox/{message_id}/associer`. DossierFacile Connect est préparé avec la demande OAuth2 `/api/biens/{id}/candidatures/{application_id}/dossier-facile/connect`, le callback `/api/dossier-facile/callback`, le suivi et le webhook `/api/internal/dossier-facile/webhook`. Les pièces de candidature utilisent `GET/POST /api/biens/{id}/candidatures/{application_id}/pieces`, `PUT .../pieces/{document_id}/verification`, `GET .../completude` et `POST .../verifier`. Le parcours e-mail/candidat utilise `POST .../lien-candidat`, `GET/POST /api/candidature-acces/{token}`, `POST .../pieces`, ainsi que les messages `/api/biens/{id}/candidatures/{application_id}/messages`. L’agent peut demander les pièces manquantes avec `POST .../agent/relancer-completude`, sans pouvoir refuser une candidature. Les routes documents, validations et audit suivent le contrat décrit dans [`docs/API_OWNER_WORKSPACE_CONTRACT.md`](../docs/API_OWNER_WORKSPACE_CONTRACT.md).
 
 La connexion Google utilise OpenID Connect avec les scopes `openid email profile`. Elle ne demande aucun accès Gmail. Les routes sont `GET /api/auth/google/start` et `GET /api/auth/google/callback`. Il faut créer un client OAuth Web dans Google Cloud et déclarer exactement la valeur de `PIAULE_GOOGLE_REDIRECT_URI`.
+
+## Équipe d'agents du propriétaire
+
+À la création d'un compte classique ou Google, le backend provisionne automatiquement une équipe privée dans le workspace du propriétaire. Le catalogue initial comprend l'Orchestrateur, Bien, Candidatures, Complétude, Confiance, Comparaison, Visites, Communication, Conformité et Suivi. Ces instances ont des identifiants propres au workspace ; elles ne partagent ni messages, ni missions, ni données avec un autre propriétaire.
+
+Le propriétaire peut afficher son équipe avec `GET /api/agents`. L'Orchestrateur est le point de contact principal : `POST /api/agents/orchestrateur/messages` enregistre une demande, crée une mission `queued` et ajoute un événement d'audit. `GET /api/agents/orchestrateur/messages` relit l'échange. Le worker devra ensuite prendre la mission, produire une réponse et mettre à jour le message ; ce branchement n'est pas simulé par l'API.
 
 Les visites utilisent actuellement les routes `/api/biens/{id}/visite-creneaux`, `/api/biens/{id}/visites` et `/api/biens/{id}/candidatures/{application_id}/visites/proposer`. Le portail candidat répond via `/api/candidature-acces/{token}/visites/{visit_id}/reponse`. Aucun calendrier externe n’est appelé par ces routes.
 
