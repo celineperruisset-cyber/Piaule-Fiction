@@ -1,0 +1,16 @@
+{
+  "name": "piaule-fiction-frontend",
+  "version": "0.14.0",
+  "private": true,
+  "description": "Site Piaule Fiction (accueil + workspace propriétaire) : HTML, CSS et JavaScript sans framework.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "node scripts/serve.mjs",
+    "start": "node scripts/serve.mjs",
+    "build": "python3 build.py",
+    "dev:proxy": "API_MODE=proxy node scripts/serve.mjs"
+  }
+}

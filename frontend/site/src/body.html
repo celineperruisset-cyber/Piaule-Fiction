@@ -1,0 +1,494 @@
+<div class="kfilm" id="film" aria-hidden="true">
+  <img class="fk" src="film/cle-1.webp" alt=""><img class="fk" src="film/cle-2.webp" alt=""><img class="fk" src="film/cle-3.webp" alt=""><img class="fk" src="film/cle-4.webp" alt=""><img class="fk" src="film/cle-5.webp" alt=""><img class="fk" src="film/cle-6.webp" alt="">
+  <canvas class="fcv" id="fcv"></canvas>
+  <div class="veil veil-d" id="veil-d"></div><div class="veil veil-l" id="veil-l"></div>
+</div>
+
+<header class="top">
+  <a class="lockup" href="#recherche" data-go="0" aria-label="Piaule Fiction, retour au début"><img src="hirondelle-icone.jpg" alt=""><span class="wm" aria-hidden="true">P<span class="i">ı</span>aule F<span class="i">ı</span>ct<span class="i">ı</span>on</span></a>
+  <nav class="tnav" aria-label="Raccourcis">
+    <a href="#nuit" data-go="1">Comment ça marche</a>
+    <a href="#garanties" data-go="5">Garanties</a>
+    <button class="tpill js-trailer" type="button"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1.5v9l7.5-4.5z" fill="currentColor"/></svg>Bande-annonce</button>
+    <button class="tcta" id="tcta" type="button"><span id="tcta-l">Viens essayer</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+  </nav>
+  <button class="mbtn" id="mbtn" type="button" aria-expanded="false" aria-controls="drawer" aria-label="Ouvrir le menu"><i></i><i></i><i></i></button>
+</header>
+
+<!-- Le menu : un panneau qui glisse depuis la droite -->
+<div class="drawer" id="drawer" hidden>
+  <div class="dr-scrim" id="dr-scrim"></div>
+  <aside class="dr-panel" role="dialog" aria-modal="true" aria-label="Menu">
+    <button class="dr-x" id="dr-x" type="button" aria-label="Fermer le menu"></button>
+    <p class="dr-k">Le site</p>
+    <nav class="dr-nav" id="dr-nav" aria-label="Pages du site"></nav>
+    <div class="dr-foot">
+      <button class="dr-go" id="dr-go" type="button">Lancer ma recherche</button>
+      <button class="dr-tr js-trailer" id="dr-tr" type="button"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1.5v9l7.5-4.5z" fill="currentColor"/></svg>Voir la bande-annonce</button>
+    </div>
+  </aside>
+</div>
+
+<nav class="rail" id="rail" aria-label="Pages"></nav>
+
+<!-- 00 · Ouverture : un extrait du film, le nom en grand ; au défilement, la vidéo se défait en poussière de lumière qui dessine la clé -->
+<section class="ouv" id="ouverture" aria-label="Piaule Fiction">
+  <div class="ouv-stage">
+    <div class="ouv-bg"><video class="ouv-v" id="ouv-v" muted loop playsinline preload="auto" poster="intro/accueil.jpg" aria-hidden="true"></video><div class="ouv-veil"></div></div>
+    <div class="ouv-in">
+      <p class="ouv-k">Des agents IA qui gèrent tes biens</p>
+      <h2 class="ouv-wm"><span class="wm" aria-label="Piaule Fiction">P<span class="i">ı</span>aule F<span class="i">ı</span>ct<span class="i">ı</span>on</span></h2>
+      <p class="ouv-sig">Gérer ses biens, c'est pas de la fiction.</p>
+      <button class="ouv-film js-trailer" type="button"><span class="of-play" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M3 1.5v9l7.5-4.5z" fill="currentColor"/></svg></span><span><b>Regarder la bande-annonce</b><small>1 min 50 · avec le son</small></span></button>
+    </div>
+    <a class="ouv-cue" href="#recherche" data-go="0"><span>Glisse pour découvrir</span><i aria-hidden="true"></i></a>
+  </div>
+</section>
+
+<main>
+<div class="deck" id="deck">
+ <div class="stage" id="stage">
+
+  <!-- 01 · Tes biens -->
+  <section class="pg p1" id="recherche" data-tone="dark" aria-label="Tes biens">
+    <div class="pg-in">
+      <div class="hero">
+        <p class="live a" style="--d:0"><i></i><span><b id="live-n">14</b> agents cherchent un logement en ce moment</span></p>
+        <h1 class="h1" data-split=".08">Ton bien locatif, <span class="l2">c'est plus de la fiction.</span></h1>
+        <p class="sub a bl" style="--d:.55">Décris ton bien. Tes agents structurent les dossiers, préparent les actions et te laissent décider.</p>
+        <div class="ask-wrap">
+        <form class="ask a" id="ask" style="--d:.7" autocomplete="off">
+          <label class="sr" for="ask-in">Décris le bien à gérer</label>
+          <textarea id="ask-in" rows="2" enterkeyhint="send"></textarea>
+          <span class="ph" id="ask-ph" aria-hidden="true"></span>
+          <div class="ask-bar">
+            <button class="help" id="help" type="button" aria-expanded="false" aria-controls="guide"><span aria-hidden="true">?</span>Je ne sais pas quoi écrire</button>
+            <button class="go" id="go" type="submit"><span class="gl">Lancer les agents de gestion</span><span class="gs sr">Lancer</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+          </div>
+        </form>
+          <div class="guide" id="guide" hidden>
+            <div class="gq" data-q="city"><b>Où ?</b><div><button type="button" aria-pressed="false">Lyon</button><button type="button" aria-pressed="false">Paris</button><button type="button" aria-pressed="false">Bordeaux</button><button type="button" aria-pressed="false">Lille</button><button type="button" aria-pressed="false">Toulouse</button><button type="button" aria-pressed="false">Nantes</button></div></div>
+            <div class="gq" data-q="type"><b>Quoi ?</b><div><button type="button" aria-pressed="false">Un studio</button><button type="button" aria-pressed="false">Un T1</button><button type="button" aria-pressed="false">Une colocation</button><button type="button" aria-pressed="false">Une chambre</button></div></div>
+            <div class="gq" data-q="budget"><b>Budget max, charges comprises</b><div><button type="button" aria-pressed="false">450 €</button><button type="button" aria-pressed="false">600 €</button><button type="button" aria-pressed="false">800 €</button><button type="button" aria-pressed="false">1 000 €</button></div></div>
+            <div class="gq" data-q="when"><b>Pour quand ?</b><div><button type="button" aria-pressed="false">Dès que possible</button><button type="button" aria-pressed="false">Septembre</button><button type="button" aria-pressed="false">Janvier</button></div></div>
+            <div class="g-foot"><span id="g-ph">Choisis, ta phrase s'écrit toute seule.</span><button class="g-ok" id="g-ok" type="button">C'est bon</button></div>
+          </div>
+        </div>
+        <a class="try a" href="#espace" id="try" style="--d:.8"><span class="try-in">Essayer maintenant<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
+        <ul class="reassure a" style="--d:.95"><li>2 minutes pour commencer</li><li>Rien ne part sans ton accord</li><li>Jamais d'argent avant une visite</li></ul>
+        <p class="ack" id="ack" aria-live="polite"></p>
+      </div>
+      <button class="tmini a js-trailer" type="button" style="--d:1.05" id="trailer-open"><span class="tf"><video id="tc-loop" muted loop playsinline preload="none" poster="intro/boucle.jpg" aria-hidden="true"></video><span class="tp" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M3 1.5v9l7.5-4.5z" fill="currentColor"/></svg></span></span><span><b>Voir la bande-annonce</b><small>1 min 50 · avec le son</small></span></button>
+      <a class="cue a" href="#nuit" data-go="1" style="--d:1.2"><i aria-hidden="true"></i><span>Défile : tes agents te montrent la suite</span></a>
+    </div>
+  </section>
+
+  <!-- Dossiers reçus -->
+  <section class="pg p3" id="nuit" data-tone="dark" aria-label="Jour et nuit">
+    <div class="nfield" id="field" aria-label="Les annonces de la nuit"></div>
+    <div class="ttl">
+      <p class="eb a" style="--d:0">Jour et nuit</p>
+      <h2 class="h2" data-split=".08">Pendant que tu vis ta vie, <span class="acc">tes agents avancent.</span></h2>
+      <div class="lw"><p class="lead a bl" style="--d:.45">Les dossiers et demandes arrivent à différents moments. Tes agents les structurent, signalent les risques et préparent les prochaines actions, jour et nuit.</p></div>
+    </div>
+    <div class="scene">
+      <div class="hud glass sx">
+        <div class="hz hz-you you" id="you">
+          <div class="clk" id="clk">
+          <svg class="clk-b" viewBox="0 0 200 200" aria-hidden="true">
+            <defs>
+              <radialGradient id="mMir" cx=".38" cy=".3" r=".85"><stop offset="0" stop-color="#3E4566"/><stop offset=".55" stop-color="#22263D"/><stop offset="1" stop-color="#121424"/></radialGradient>
+              <linearGradient id="mSheen" x1="0" y1="0" x2="1" y2="1"><stop offset=".18" stop-color="#fff" stop-opacity="0"/><stop offset=".3" stop-color="#fff" stop-opacity=".13"/><stop offset=".36" stop-color="#fff" stop-opacity=".02"/><stop offset=".62" stop-color="#fff" stop-opacity="0"/><stop offset=".7" stop-color="#fff" stop-opacity=".06"/><stop offset=".74" stop-color="#fff" stop-opacity="0"/></linearGradient>
+              <linearGradient id="mRim" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#E8ECFF"/><stop offset=".5" stop-color="#8C98C8"/><stop offset="1" stop-color="#3B456E"/></linearGradient>
+              <radialGradient id="mVig" cx=".5" cy=".5" r=".5"><stop offset=".7" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".45"/></radialGradient>
+              <filter id="mRef" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation=".7"/><feColorMatrix type="saturate" values=".45"/><feComponentTransfer><feFuncR type="linear" slope=".62" intercept=".02"/><feFuncG type="linear" slope=".58" intercept=".015"/><feFuncB type="linear" slope=".52" intercept=".01"/></feComponentTransfer></filter>
+              <filter id="mHalo" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="11"/></filter>
+              <filter id="mEdge" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="1.6"/></filter>
+              <filter id="mNum" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+                <feGaussianBlur in="SourceAlpha" stdDeviation="2.4" result="b1"/><feFlood flood-color="#5470FF" flood-opacity=".95"/><feComposite in2="b1" operator="in" result="g1"/>
+                <feGaussianBlur in="SourceAlpha" stdDeviation=".7" result="b2"/><feFlood flood-color="#C9D3FF"/><feComposite in2="b2" operator="in" result="g2"/>
+                <feMerge><feMergeNode in="g1"/><feMergeNode in="g2"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+              <clipPath id="mClip"><circle cx="100.0" cy="100.0" r="84.0"/></clipPath>
+            </defs>
+            <circle id="cglow2" cx="100.0" cy="100.0" r="96.0" fill="#5C78FF" filter="url(#mHalo)" opacity=".5"/>
+            <circle id="cglow" cx="100.0" cy="100.0" r="85.5" fill="none" stroke="#B9C6FF" stroke-width="5" filter="url(#mEdge)" opacity=".85"/>
+            <g clip-path="url(#mClip)">
+              <circle cx="100.0" cy="100.0" r="84.0" fill="url(#mMir)"/>
+              <image href="photos/annonce-6.jpg" x="-14.0" y="22.0" width="228.0" height="171.8" preserveAspectRatio="xMidYMid slice" transform="translate(200.0 0) scale(-1 1)" filter="url(#mRef)" opacity=".5"/>
+              <circle cx="100.0" cy="100.0" r="84.0" fill="url(#mVig)"/>
+              <circle cx="100.0" cy="100.0" r="84.0" fill="url(#mSheen)"/>
+            </g>
+            <circle cx="100.0" cy="100.0" r="84.0" fill="none" stroke="url(#mRim)" stroke-width="1.3"/>
+            <circle cx="100.0" cy="100.0" r="83.0" fill="none" stroke="rgba(0,0,0,.35)" stroke-width=".8"/>
+            <g class="cnum" stroke="#F3F5FF" stroke-linecap="butt" filter="url(#mNum)"><g transform="translate(100.00 34.00) rotate(0.0) translate(-9.60 0)"><line x1="1.30" y1="-7.00" x2="8.30" y2="7.00" stroke-width="2.3"/><line x1="8.30" y1="-7.00" x2="1.30" y2="7.00" stroke-width="0.95"/><line x1="-0.20" y1="-6.58" x2="3.00" y2="-6.58" stroke-width="0.85"/><line x1="6.80" y1="-6.58" x2="9.80" y2="-6.58" stroke-width="0.85"/><line x1="-0.20" y1="6.58" x2="2.80" y2="6.58" stroke-width="0.85"/><line x1="6.60" y1="6.58" x2="9.80" y2="6.58" stroke-width="0.85"/><line x1="12.70" y1="-7.00" x2="12.70" y2="7.00" stroke-width="2.3"/><line x1="11.00" y1="-6.58" x2="14.40" y2="-6.58" stroke-width="0.85"/><line x1="11.00" y1="6.58" x2="14.40" y2="6.58" stroke-width="0.85"/><line x1="17.50" y1="-7.00" x2="17.50" y2="7.00" stroke-width="2.3"/><line x1="15.80" y1="-6.58" x2="19.20" y2="-6.58" stroke-width="0.85"/><line x1="15.80" y1="6.58" x2="19.20" y2="6.58" stroke-width="0.85"/></g><g transform="translate(133.00 42.84) rotate(30.0) translate(-1.70 0)"><line x1="1.70" y1="-7.00" x2="1.70" y2="7.00" stroke-width="2.3"/><line x1="0.00" y1="-6.58" x2="3.40" y2="-6.58" stroke-width="0.85"/><line x1="0.00" y1="6.58" x2="3.40" y2="6.58" stroke-width="0.85"/></g><g transform="translate(157.16 67.00) rotate(60.0) translate(-4.10 0)"><line x1="1.70" y1="-7.00" x2="1.70" y2="7.00" stroke-width="2.3"/><line x1="0.00" y1="-6.58" x2="3.40" y2="-6.58" stroke-width="0.85"/><line x1="0.00" y1="6.58" x2="3.40" y2="6.58" stroke-width="0.85"/><line x1="6.50" y1="-7.00" x2="6.50" y2="7.00" stroke-width="2.3"/><line x1="4.80" y1="-6.58" x2="8.20" y2="-6.58" stroke-width="0.85"/><line x1="4.80" y1="6.58" x2="8.20" y2="6.58" stroke-width="0.85"/></g><g transform="translate(166.00 100.00) rotate(90.0) translate(-6.50 0)"><line x1="1.70" y1="-7.00" x2="1.70" y2="7.00" stroke-width="2.3"/><line x1="0.00" y1="-6.58" x2="3.40" y2="-6.58" stroke-width="0.85"/><line x1="0.00" y1="6.58" x2="3.40" y2="6.58" stroke-width="0.85"/><line x1="6.50" y1="-7.00" x2="6.50" y2="7.00" stroke-width="2.3"/><line x1="4.80" y1="-6.58" x2="8.20" y2="-6.58" stroke-width="0.85"/><line x1="4.80" y1="6.58" x2="8.20" y2="6.58" stroke-width="0.85"/><line x1="11.30" y1="-7.00" x2="11.30" y2="7.00" stroke-width="2.3"/><line x1="9.60" y1="-6.58" x2="13.00" y2="-6.58" stroke-width="0.85"/><line x1="9.60" y1="6.58" x2="13.00" y2="6.58" stroke-width="0.85"/></g><g transform="translate(157.16 133.00) rotate(120.0) translate(-7.20 0)"><line x1="1.70" y1="-7.00" x2="1.70" y2="7.00" stroke-width="2.3"/><line x1="0.00" y1="-6.58" x2="3.40" y2="-6.58" stroke-width="0.85"/><line x1="0.00" y1="6.58" x2="3.40" y2="6.58" stroke-width="0.85"/><line x1="6.10" y1="-7.00" x2="9.60" y2="7.00" stroke-width="2.3"/><line x1="13.10" y1="-7.00" x2="9.60" y2="7.00" stroke-width="0.95"/><line x1="4.60" y1="-6.58" x2="7.80" y2="-6.58" stroke-width="0.85"/><line x1="11.80" y1="-6.58" x2="14.60" y2="-6.58" stroke-width="0.85"/></g><g transform="translate(133.00 157.16) rotate(150.0) translate(-4.80 0)"><line x1="1.30" y1="-7.00" x2="4.80" y2="7.00" stroke-width="2.3"/><line x1="8.30" y1="-7.00" x2="4.80" y2="7.00" stroke-width="0.95"/><line x1="-0.20" y1="-6.58" x2="3.00" y2="-6.58" stroke-width="0.85"/><line x1="7.00" y1="-6.58" x2="9.80" y2="-6.58" stroke-width="0.85"/></g><g transform="translate(100.00 166.00) rotate(180.0) translate(-7.20 0)"><line x1="1.30" y1="-7.00" x2="4.80" y2="7.00" stroke-width="2.3"/><line x1="8.30" y1="-7.00" x2="4.80" y2="7.00" stroke-width="0.95"/><line x1="-0.20" y1="-6.58" x2="3.00" y2="-6.58" stroke-width="0.85"/><line x1="7.00" y1="-6.58" x2="9.80" y2="-6.58" stroke-width="0.85"/><line x1="12.70" y1="-7.00" x2="12.70" y2="7.00" stroke-width="2.3"/><line x1="11.00" y1="-6.58" x2="14.40" y2="-6.58" stroke-width="0.85"/><line x1="11.00" y1="6.58" x2="14.40" y2="6.58" stroke-width="0.85"/></g><g transform="translate(67.00 157.16) rotate(210.0) translate(-9.60 0)"><line x1="1.30" y1="-7.00" x2="4.80" y2="7.00" stroke-width="2.3"/><line x1="8.30" y1="-7.00" x2="4.80" y2="7.00" stroke-width="0.95"/><line x1="-0.20" y1="-6.58" x2="3.00" y2="-6.58" stroke-width="0.85"/><line x1="7.00" y1="-6.58" x2="9.80" y2="-6.58" stroke-width="0.85"/><line x1="12.70" y1="-7.00" x2="12.70" y2="7.00" stroke-width="2.3"/><line x1="11.00" y1="-6.58" x2="14.40" y2="-6.58" stroke-width="0.85"/><line x1="11.00" y1="6.58" x2="14.40" y2="6.58" stroke-width="0.85"/><line x1="17.50" y1="-7.00" x2="17.50" y2="7.00" stroke-width="2.3"/><line x1="15.80" y1="-6.58" x2="19.20" y2="-6.58" stroke-width="0.85"/><line x1="15.80" y1="6.58" x2="19.20" y2="6.58" stroke-width="0.85"/></g><g transform="translate(42.84 133.00) rotate(240.0) translate(-12.00 0)"><line x1="1.30" y1="-7.00" x2="4.80" y2="7.00" stroke-width="2.3"/><line x1="8.30" y1="-7.00" x2="4.80" y2="7.00" stroke-width="0.95"/><line x1="-0.20" y1="-6.58" x2="3.00" y2="-6.58" stroke-width="0.85"/><line x1="7.00" y1="-6.58" x2="9.80" y2="-6.58" stroke-width="0.85"/><line x1="12.70" y1="-7.00" x2="12.70" y2="7.00" stroke-width="2.3"/><line x1="11.00" y1="-6.58" x2="14.40" y2="-6.58" stroke-width="0.85"/><line x1="11.00" y1="6.58" x2="14.40" y2="6.58" stroke-width="0.85"/><line x1="17.50" y1="-7.00" x2="17.50" y2="7.00" stroke-width="2.3"/><line x1="15.80" y1="-6.58" x2="19.20" y2="-6.58" stroke-width="0.85"/><line x1="15.80" y1="6.58" x2="19.20" y2="6.58" stroke-width="0.85"/><line x1="22.30" y1="-7.00" x2="22.30" y2="7.00" stroke-width="2.3"/><line x1="20.60" y1="-6.58" x2="24.00" y2="-6.58" stroke-width="0.85"/><line x1="20.60" y1="6.58" x2="24.00" y2="6.58" stroke-width="0.85"/></g><g transform="translate(34.00 100.00) rotate(270.0) translate(-7.20 0)"><line x1="1.70" y1="-7.00" x2="1.70" y2="7.00" stroke-width="2.3"/><line x1="0.00" y1="-6.58" x2="3.40" y2="-6.58" stroke-width="0.85"/><line x1="0.00" y1="6.58" x2="3.40" y2="6.58" stroke-width="0.85"/><line x1="6.10" y1="-7.00" x2="13.10" y2="7.00" stroke-width="2.3"/><line x1="13.10" y1="-7.00" x2="6.10" y2="7.00" stroke-width="0.95"/><line x1="4.60" y1="-6.58" x2="7.80" y2="-6.58" stroke-width="0.85"/><line x1="11.60" y1="-6.58" x2="14.60" y2="-6.58" stroke-width="0.85"/><line x1="4.60" y1="6.58" x2="7.60" y2="6.58" stroke-width="0.85"/><line x1="11.40" y1="6.58" x2="14.60" y2="6.58" stroke-width="0.85"/></g><g transform="translate(42.84 67.00) rotate(300.0) translate(-4.80 0)"><line x1="1.30" y1="-7.00" x2="8.30" y2="7.00" stroke-width="2.3"/><line x1="8.30" y1="-7.00" x2="1.30" y2="7.00" stroke-width="0.95"/><line x1="-0.20" y1="-6.58" x2="3.00" y2="-6.58" stroke-width="0.85"/><line x1="6.80" y1="-6.58" x2="9.80" y2="-6.58" stroke-width="0.85"/><line x1="-0.20" y1="6.58" x2="2.80" y2="6.58" stroke-width="0.85"/><line x1="6.60" y1="6.58" x2="9.80" y2="6.58" stroke-width="0.85"/></g><g transform="translate(67.00 42.84) rotate(330.0) translate(-7.20 0)"><line x1="1.30" y1="-7.00" x2="8.30" y2="7.00" stroke-width="2.3"/><line x1="8.30" y1="-7.00" x2="1.30" y2="7.00" stroke-width="0.95"/><line x1="-0.20" y1="-6.58" x2="3.00" y2="-6.58" stroke-width="0.85"/><line x1="6.80" y1="-6.58" x2="9.80" y2="-6.58" stroke-width="0.85"/><line x1="-0.20" y1="6.58" x2="2.80" y2="6.58" stroke-width="0.85"/><line x1="6.60" y1="6.58" x2="9.80" y2="6.58" stroke-width="0.85"/><line x1="12.70" y1="-7.00" x2="12.70" y2="7.00" stroke-width="2.3"/><line x1="11.00" y1="-6.58" x2="14.40" y2="-6.58" stroke-width="0.85"/><line x1="11.00" y1="6.58" x2="14.40" y2="6.58" stroke-width="0.85"/></g></g>
+          </svg>
+          <svg class="clk-h" viewBox="0 0 200 200" aria-hidden="true">
+            <defs>
+              <linearGradient id="mBrass" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#56618C"/><stop offset=".45" stop-color="#E6EAFF"/><stop offset=".55" stop-color="#AEB8E0"/><stop offset="1" stop-color="#4B5580"/></linearGradient>
+              <radialGradient id="mCap" cx=".35" cy=".3" r=".8"><stop offset="0" stop-color="#F1F3FF"/><stop offset=".5" stop-color="#9EA9D6"/><stop offset="1" stop-color="#4A5480"/></radialGradient>
+              <filter id="mHs" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="1.4"/></filter>
+            </defs>
+            <g opacity=".55" filter="url(#mHs)" transform="translate(2.2 3.4)"><use href="#hh"/><use href="#mh"/></g>
+            <path id="hh" d="M98.20 111.00 L98.50 100.00 L99.15 62.00 L100.00 60.40 L100.85 62.00 L101.50 100.00 L101.80 111.00 Z" fill="url(#mBrass)"/>
+            <path id="mh" d="M98.65 114.00 L98.95 100.00 L99.45 40.00 L100.00 38.40 L100.55 40.00 L101.05 100.00 L101.35 114.00 Z" fill="url(#mBrass)"/>
+            <circle cx="100.0" cy="100.0" r="4.2" fill="url(#mCap)"/>
+            <circle cx="100.0" cy="100.0" r="1.3" fill="#2A3150"/>
+          </svg>
+          </div>
+          <div class="mo">
+            <span class="hl">Toi · <b id="clock">07:00</b></span>
+            <div class="mo-w" id="mo-w"></div>
+            <div class="mo-f"><span class="mo-p"><i id="mo-bar"></i></span><span class="mo-r" id="mo-r">07:00 – 08:30</span></div>
+          </div>
+        </div>
+        <div class="hz hz-ag">
+          <div class="ag-h"><span class="hl"><i class="ldot"></i>Tes agents, au même moment</span><span class="cnts"><span><b id="c-read">0</b> lues</span><span class="bad"><b id="c-out">0</b> écartées</span><span class="good"><b id="c-keep">0</b> retenues</span></span></div>
+          <ol class="feed" id="feed" aria-live="off"></ol>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Ta participanture -->
+  <section class="pg p2" id="dossier" data-tone="light" aria-label="Dossiers reçus">
+    <div class="ttl">
+      <p class="eb a" style="--d:0">Une seule fois, pour toutes tes participantures</p>
+      <h2 class="h2" data-split=".08">Dossiers reçus, <span class="acc">vérifié et certifié.</span></h2>
+      <div class="lw"><p class="lead a bl" style="--d:.45">Tu envoies tes pièces. Tes agents contrôlent qu'elles sont authentiques et qu'elles racontent toutes la même histoire.</p></div>
+    </div>
+    <div class="dz" id="dz">
+      <p class="dcap" id="dcap" aria-live="polite"><span></span></p>
+      <div class="dstage" id="dstage">
+        <div class="fback" id="fback"></div>
+
+        <div class="doc card d-id" data-i="0" aria-label="Carte d'identité, spécimen fictif">
+          <div class="dflip">
+            <div class="dface idf">
+              <div class="id-hd"><b>CARTE NATIONALE D'IDENTITÉ</b><span>IDENTITY CARD</span></div>
+              <div class="id-ph" data-a="0"><svg viewBox="0 0 60 78" aria-hidden="true"><defs><linearGradient id="pbg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ECEFF2"/><stop offset="1" stop-color="#CED4DB"/></linearGradient><radialGradient id="pfc" cx=".45" cy=".4" r=".62"><stop offset="0" stop-color="#A3A7AE"/><stop offset="1" stop-color="#6E737C"/></radialGradient></defs><rect width="60" height="78" fill="url(#pbg)"/><path d="M7 78c1-14 9-21 23-21s22 7 23 21z" fill="#5A5F67"/><rect x="25" y="46" width="10" height="12" rx="4" fill="#80858D"/><ellipse cx="30" cy="35" rx="12" ry="14.5" fill="url(#pfc)"/><path d="M17 34c-1-12 5-20 14-20s15 7 13 20c-2-6-6-10-13-10s-12 4-14 10z" fill="#3B3F46"/><path d="M17 33c-3 10-1 22 3 27M44 33c3 10 1 22-3 27" stroke="#3B3F46" stroke-width="5" fill="none" stroke-linecap="round"/></svg></div>
+              <div class="id-f">
+                <p><small>NOM / Surname</small><b>MARTIN</b></p>
+                <p><small>Prénoms / Given names</small><b>Léa, Camille</b></p>
+                <div class="id-row"><p><small>SEXE / Sex</small><b>F</b></p><p><small>NATIONALITÉ</small><b>FRA</b></p><p><small>DATE DE NAISS.</small><b>03 04 2004</b></p></div>
+                <div class="id-row"><p data-a="1"><small>N° DU DOCUMENT</small><b>F8KQ2TL0A</b></p><p><small>DATE D'EXPIR.</small><b>11 11 2031</b></p></div>
+              </div>
+              <div class="id-sig"><svg viewBox="0 0 80 26" aria-hidden="true"><path d="M4 16c4-6 9-11 12-9s-2 11 2 10 5-9 9-9 2 8 6 8 9-10 13-10-3 12 2 12 7-6 12-6 8 2 15 1"/></svg></div>
+              <div class="id-ghost" aria-hidden="true"><svg viewBox="0 0 60 78"><rect width="60" height="78" fill="url(#pbg)"/><path d="M7 78c1-14 9-21 23-21s22 7 23 21z" fill="#5A5F67"/><ellipse cx="30" cy="35" rx="12" ry="14.5" fill="url(#pfc)"/><path d="M17 34c-1-12 5-20 14-20s15 7 13 20c-2-6-6-10-13-10s-12 4-14 10z" fill="#3B3F46"/></svg></div>
+              <i class="holo"></i><i class="spec">SPÉCIMEN</i><i class="scanbar"></i>
+            </div>
+            <div class="dface idb">
+              <div class="idb-f">
+                <p><small>ADRESSE / Address</small><b>14 RUE DES LILAS<br>69007 LYON</b></p>
+                <div class="id-row"><p><small>LIEU DE NAISSANCE</small><b>LYON (69)</b></p><p><small>DÉLIVRÉE LE</small><b>11 11 2021</b></p></div>
+              </div>
+              <div class="mrz" data-a="2">IDFRAF8KQ2TL0A4&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;<br>0404032F3111117FRA&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;6<br>MARTIN&lt;&lt;LEA&lt;CAMILLE&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;</div>
+              <i class="spec">SPÉCIMEN</i><i class="scanbar"></i>
+            </div>
+          </div>
+          <span class="dok" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+        </div>
+
+        <div class="doc paper d-ct" data-i="1" aria-label="Contrat d'apprentissage, spécimen fictif">
+          <div class="dface form">
+            <div class="fh"><b>CONTRAT D'APPRENTISSAGE</b><small>Formulaire FA13 · spécimen</small></div>
+            <p class="sec">L'EMPLOYEUR</p>
+            <div class="g2"><p><small>Dénomination</small><b>Atelier Fictif SAS</b></p><p data-a="0"><small>N° SIRET</small><b>123 456 789 00012</b></p><p><small>Adresse</small><b>8 quai de l'Exemple, Lyon</b></p><p><small>Code NAF · Effectif</small><b>7112B · 24</b></p></div>
+            <p class="sec">L'APPRENTI(E)</p>
+            <div class="g2"><p><small>Nom de naissance</small><b>MARTIN</b></p><p><small>Prénom</small><b>Léa</b></p><p><small>Date de naissance</small><b>03/04/2004</b></p><p><small>Diplôme préparé</small><b>Diplôme d'ingénieur</b></p></div>
+            <p class="sec">LE CONTRAT</p>
+            <div class="g2"><p data-a="1"><small>Début · Fin</small><b>01/09/2025 → 31/08/2027</b></p><p><small>Durée hebdomadaire</small><b>35 h</b></p><p><small>Rémunération 2ᵉ année</small><b>61 % du SMIC</b></p><p><small>Type</small><b><i class="cb x"></i>Initial <i class="cb"></i>Avenant</b></p></div>
+            <div class="sigs" data-a="2"><span><svg viewBox="0 0 80 26" aria-hidden="true"><path d="M3 18c6-10 10-14 13-12s-4 14 0 13 7-12 11-12 1 10 5 10 6-8 10-8 3 7 7 7 8-5 12-5 6 3 13 2"/></svg>L'employeur</span><span><svg viewBox="0 0 80 26" aria-hidden="true"><path d="M4 16c4-6 9-11 12-9s-2 11 2 10 5-9 9-9 2 8 6 8 9-10 13-10-3 12 2 12 7-6 12-6 8 2 15 1"/></svg>L'apprentie</span></div>
+            <span class="cachet" aria-hidden="true"><b>ATELIER FICTIF SAS</b>69007 LYON<br>SIRET 123 456 789 00012</span>
+            <i class="spec">SPÉCIMEN</i><i class="scanbar"></i>
+          </div>
+          <span class="dok" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+        </div>
+
+        <div class="doc paper d-pa" data-i="2" aria-label="Trois bulletins de paie, spécimens fictifs">
+          <div class="dface pay">
+            <div class="pt1"><b>BULLETIN DE PAIE</b><span data-a="2">Période du 01/08/2026 au 31/08/2026</span></div>
+            <div class="pp"><div data-a="0"><b>Atelier Fictif SAS</b><small>8 quai de l'Exemple · 69007 Lyon<br>SIRET 123 456 789 00012 · NAF 7112B<br>Convention collective Syntec</small></div><div class="emp"><b>Mme Léa MARTIN</b><small>Apprentie ingénieure<br>Entrée le 01/09/2025<br>Matricule 00417</small></div></div>
+            <table class="ptab"><thead><tr><th>Rubrique</th><th>Base</th><th>Taux</th><th>Montant</th></tr></thead><tbody>
+              <tr><td>Salaire de base</td><td>151,67</td><td>7,9500</td><td>1 205,78</td></tr>
+              <tr><td>Santé · complémentaire</td><td>1 205,78</td><td>1,53</td><td>−18,40</td></tr>
+              <tr><td>Retraite complémentaire</td><td>1 205,78</td><td>exo.</td><td>0,00</td></tr>
+              <tr><td>Assurance chômage</td><td>1 205,78</td><td>exo.</td><td>0,00</td></tr>
+              <tr><td>CSG · CRDS</td><td>—</td><td>exo.</td><td>0,00</td></tr>
+              <tr class="tot"><td>Total des retenues</td><td></td><td></td><td>−18,40</td></tr>
+            </tbody></table>
+            <div class="nap" data-a="1"><span>Net à payer avant impôt sur le revenu</span><b>1 187,38</b></div>
+            <div class="pas"><span>Impôt sur le revenu prélevé à la source · taux 0 %</span><span>0,00</span></div>
+            <div class="netp"><span>NET PAYÉ</span><b>1 187,38 €</b></div>
+            <p class="cum">Cumuls 2026 · brut 9 646,24 · net imposable 9 499,04</p>
+            <i class="spec">SPÉCIMEN</i><i class="scanbar"></i>
+          </div>
+          <span class="dok" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+        </div>
+
+        <div class="doc paper d-vi" data-i="3" aria-label="Visa Visale, spécimen fictif">
+          <div class="dface visa">
+            <div class="vh2"><b>VISA POUR LE LOGEMENT ET L'EMPLOI</b><small>Garantie Visale · certificat de visa · spécimen</small></div>
+            <dl class="vd"><dt>Locataire</dt><dd data-a="1">Mme Léa MARTIN</dd><dt>N° de visa</dt><dd>V2026-0048213-L</dd><dt>Loyer maximum garanti</dt><dd data-a="2" id="vis-rent">600 € charges comprises</dd><dt>Type de logement</dt><dd>Parc privé</dd><dt>Valable jusqu'au</dt><dd>14/04/2027</dd></dl>
+            <p class="vn">Ce visa est à remettre au bailleur. Il lui permet de vérifier ta garantie et de signer le contrat de cautionnement en ligne.</p>
+            <div class="vq"><span class="qrw" data-a="0"><svg id="qr" viewBox="0 0 21 21" aria-hidden="true"></svg></span><small>Vérification du visa par le bailleur</small></div>
+            <i class="spec">SPÉCIMEN</i><i class="scanbar"></i>
+          </div>
+          <span class="dok" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+        </div>
+
+        <div class="doc paper d-av" data-i="4" aria-label="Avis d'impôt, spécimen fictif">
+          <div class="dface avis">
+            <div class="ah" data-a="2"><b>AVIS D'IMPÔT 2026</b><span>IMPÔT SUR LES REVENUS de l'année 2025</span></div>
+            <div class="aref"><p data-a="1"><small>Vos références</small>N° fiscal : 30 12 345 678 912<br>Réf. de l'avis : 26 69 A 123 456 7<br>Mise en recouvrement : 31/07/2026</p><p class="adr"><b>Mme MARTIN LÉA</b><br>14 RUE DES LILAS<br>69007 LYON</p></div>
+            <div class="abox" data-a="0"><span>Revenu fiscal de référence</span><b>14 112 €</b></div>
+            <table class="atab"><tr><td>Salaires et assimilés</td><td>14 112</td></tr><tr><td>Nombre de parts</td><td>1</td></tr><tr><td>Impôt sur le revenu net</td><td>0</td></tr></table>
+            <div class="arest"><span>Montant restant à payer</span><b>0 €</b></div>
+            <i class="spec">SPÉCIMEN</i><i class="scanbar"></i>
+          </div>
+          <span class="dok" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+        </div>
+
+        <svg class="rpaths" id="rpaths" aria-hidden="true"></svg>
+        <div class="reuse" id="reuse"></div>
+        <p class="rstat" id="rstat"><b id="rs-n">0</b><span>participantures avec<br>le même dossier</span><em>0 ressaisie</em></p>
+
+        <div class="ghost" id="ghost" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M10 16.5h4"/></svg><b>Avis d'imposition 2026</b><span>Manquant</span></div>
+
+        <div class="ffront" id="ffront">
+          <div class="ff-in"><img src="hirondelle-icone.jpg" alt=""><span><b>Dossiers reçus</b><small id="ff-n">0 / 5 pièces vérifiées</small></span></div>
+          <i class="ff-bar"><b id="ff-bar"></b></i>
+          <i class="ff-shine"></i>
+        </div>
+
+        <div class="seal2" id="seal2" aria-hidden="true"><i class="ring1"></i><i class="ring2"></i><svg viewBox="0 0 128 128"><defs><path id="seal-c" d="M64,64 m-47,0 a47,47 0 1,1 94,0 a47,47 0 1,1 -94,0"/></defs><circle class="s1" cx="64" cy="64" r="62"/><circle class="s2" cx="64" cy="64" r="56"/><text><textPath href="#seal-c">DOSSIER CERTIFIÉ · PIAULE FICTION · VÉRIFIÉ ·</textPath></text></svg><img src="hirondelle-icone.jpg" alt=""></div>
+
+        <svg class="leads" id="leads" aria-hidden="true"></svg>
+        <div class="callouts" id="callouts" aria-live="polite"></div>
+        <div class="dcur" id="dcur" aria-hidden="true"><svg viewBox="0 0 18 18"><path d="M2 1.5l13.5 6.4-5.8 1.6-2.4 5.6z" stroke="#fff" stroke-width="1.3" stroke-linejoin="round"/></svg><span></span></div>
+        <div class="gbub" id="gbub"><small>L'Agent</small><span id="gbub-t">Il me manque ton avis d'imposition 2026. Tu le trouves sur impots.gouv, rubrique Documents.</span><i id="gbub-b">Déposer la pièce</i></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Jour et nuit -->
+  <section class="pg p4" id="participanture" data-tone="light" aria-label="Ta participanture">
+    <div class="ttl">
+      <p class="eb a" style="--d:0">Ta participanture</p>
+      <h2 class="h2" data-split=".08">Une notif, <span class="acc">un oui, c'est envoyé.</span></h2>
+      <div class="lw"><p class="lead a bl" style="--d:.45">La bonne annonce n'attend pas : tes agents te préviennent dans la minute, et ta participanture part avant les autres.</p></div>
+    </div>
+    <div class="scene">
+      <p class="ccap fx" id="ccap"><span>Ton téléphone vibre : une annonce pour toi.</span></p>
+      <div class="cand" id="cand" data-k="0">
+        <div class="notif fx" role="status">
+          <img class="ic" src="hirondelle-icone.jpg" alt="">
+          <span class="nmeta"><span>Piaule Fiction</span><span>maintenant</span></span>
+          <b id="n-title">Nouveau · Studio · 23 m² · 515 € · Gratte-Ciel</b>
+          <p id="n-text">94 % avec ta recherche. Ta participanture est prête.</p>
+          <img class="nph" id="n-ph" src="photos/annonce-2.jpg" alt="">
+          <span class="nacts"><span class="nbtn no">Plus tard</span><span class="nbtn yes"><span class="y1">Oui, participante</span><span class="y2">✓ C'est oui</span><i class="tap" aria-hidden="true"></i></span></span>
+        </div>
+        <div class="mail glass fx">
+          <div class="mh"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Rédigé par l'Agent</span><span class="okp">✓ Validé par toi<span class="okt"> · 07:41</span></span></div>
+          <div class="mrow"><span>À</span><div><span id="m-to">location@regie-durand.example</span><small>Adresse trouvée dans l'annonce par l'Agent</small></div></div>
+          <div class="mrow obj"><span>Objet</span><div id="m-obj">Demande de visite · Studio 23 m²</div></div>
+          <p class="mbody" id="m-body"></p>
+          <div class="atts">
+            <span class="att"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5l-7.8 7.8a5 5 0 0 1-7-7l8.3-8.3a3.4 3.4 0 0 1 4.8 4.8l-8.2 8.2a1.7 1.7 0 0 1-2.4-2.4l7.4-7.4"/></svg><span>Dossier-complet.pdf</span></span>
+            <span class="att"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5l-7.8 7.8a5 5 0 0 1-7-7l8.3-8.3a3.4 3.4 0 0 1 4.8 4.8l-8.2 8.2a1.7 1.7 0 0 1-2.4-2.4l7.4-7.4"/></svg><span>Visa-Visale.pdf</span></span>
+          </div>
+          <div class="mfoot"><span class="via"><span class="on">✓ Par mail</span><span>Lien de participanture</span></span><span class="send2"><span class="s1">Envoyer</span><span class="s2">✓ Envoyé</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-6 16-2.6-6.4z"/></svg><i class="tap" aria-hidden="true"></i></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- La visite -->
+  <section class="pg p5" id="visite" data-tone="light" aria-label="La visite">
+    <div class="ttl">
+      <p class="eb a" style="--d:0">La visite</p>
+      <h2 class="h2" data-split=".08">Il ne te reste <span class="acc">qu'à décrocher.</span></h2>
+      <div class="lw"><p class="lead a bl" style="--d:.45">La régie t'appelle ou t'écrit pour une visite. Tes agents mettent le créneau dans ton agenda et préparent tes questions.</p></div>
+    </div>
+    <div class="scene">
+      <div class="vis" id="vis" data-k="0">
+        <div class="call fx">
+          <span class="cav" aria-hidden="true">D</span>
+          <b>Régie Durand</b>
+          <span class="cs" id="call-s">Lyon · à propos du studio, Gratte-Ciel</span>
+          <span class="cstate" id="call-st">Appel entrant…</span>
+          <span class="cbtns" aria-hidden="true"><i><svg viewBox="0 0 24 24"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1z"/></svg></i><i><svg viewBox="0 0 24 24"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1z"/></svg></i></span>
+          <p class="quote" id="quote">« Votre dossier est complet, c'est rare. Samedi à 10 h pour la visite, ça vous va ? »<small>Mme Durand, en appel</small></p>
+        </div>
+        <div class="cal glass fx">
+          <span class="cday"><small>Sam.</small><b>17</b></span>
+          <b id="cal-t">10:00 · Visite du studio, Gratte-Ciel</b>
+          <p><b>L'Agent</b> a préparé tes questions : charges, chauffage, date d'entrée. Pense à ta pièce d'identité.</p>
+        </div>
+        <p class="poche fx">L'affaire est <span>dans la poche.</span></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tes garanties -->
+  <section class="pg p6" id="garanties" data-tone="light" aria-label="Tes garanties">
+    <div class="ttl">
+      <p class="eb a" style="--d:0">Tes garanties</p>
+      <h2 class="h2" data-split=".08">Tu gardes la main, <span class="acc">du début à la fin.</span></h2>
+    </div>
+    <!-- Les garanties défilent : chaque carte montre ce qu'on te garantit -->
+    <div class="scene">
+      <div class="gt sx" id="gt">
+        <div class="gt-track" id="gt-track">
+          <article class="gc glass">
+            <div class="gv gv1" aria-hidden="true">
+              <div class="m-row"><img src="photos/annonce-2.jpg" alt=""><span><b>Studio 23 m² · 515 €</b><small>Gratte-Ciel · participanture prête</small></span></div>
+              <div class="m-st"><span class="st-a"><svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>En attente de ton accord</span><span class="st-b">✓ Envoyée avec ton accord</span></div>
+              <div class="m-btns"><span class="mb">Modifier</span><span class="mb">Annuler</span><span class="mb yes">Oui, envoie<i class="tap"></i></span></div>
+            </div>
+            <h3>Rien ne part sans ton accord.</h3>
+            <p>Chaque participanture attend ton oui. Tu peux la relire, la modifier ou l'annuler.</p>
+          </article>
+          <article class="gc glass">
+            <div class="gv gv2" aria-hidden="true">
+              <p class="m-from">Message reçu · T2, Part-Dieu</p>
+              <p class="m-bub">Bonjour, pour réserver la visite, merci de m'envoyer 300 € de caution par virement.</p>
+              <p class="m-why"><b>L'Agent</b> · virement demandé avant la visite : on ne participante pas.</p>
+              <span class="m-stamp">Bloquée</span>
+            </div>
+            <h3>Jamais d'argent avant une visite.</h3>
+            <p>Une annonce qui réclame un virement avant la visite ne passe pas, et tu es prévenu.</p>
+          </article>
+          <article class="gc glass">
+            <div class="gv gv3" aria-hidden="true">
+              <div class="m-doc d1"><svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4M10 12h5M10 15.5h5"/></svg><span><b>Carte d'identité</b><small>Utilisée pour 3 participantures</small></span><em><span class="r1">Retirer</span><span class="r2">Retirée</span><i class="tap"></i></em></div>
+              <div class="m-doc"><svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4M10 12h5M10 15.5h5"/></svg><span><b>Bulletins de paie</b><small>Utilisés pour 3 participantures</small></span><em><span class="r1">Retirer</span></em></div>
+              <div class="m-doc"><svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4M10 12h5M10 15.5h5"/></svg><span><b>Avis d'imposition</b><small>Utilisé pour 3 participantures</small></span><em><span class="r1">Retirer</span></em></div>
+              <p class="m-ok">✓ Retirée. Plus personne n'y a accès.</p>
+            </div>
+            <h3>Tes pièces restent les tiennes.</h3>
+            <p>Elles ne servent qu'à tes participantures. Tu les retires de ton espace quand tu veux.</p>
+          </article>
+          <article class="gc glass">
+            <div class="gv gv4" aria-hidden="true">
+              <div class="m-row"><img src="photos/annonce-5.jpg" alt=""><span><b>T2 · 48 m² · 390 €</b><small>Part-Dieu, Lyon</small></span></div>
+              <ul class="m-chk"><li><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></svg>Loyer 45 % sous le quartier</li><li><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></svg>Photos déjà publiées ailleurs</li><li><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></svg>Paiement hors plateforme demandé</li></ul>
+              <div class="m-agent"><small>L'Agent</small><span>Écartée : trois signaux d'arnaque.</span><i><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></svg>Arnaque</i></div>
+            </div>
+            <h3>Les arnaques restent à la porte.</h3>
+            <p>Chaque annonce est vérifiée. Quand on en écarte une, tu sais pourquoi, en clair.</p>
+          </article>
+        </div>
+        <div class="gt-bar" id="gt-bar" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      </div>
+    </div>
+  </section>
+
+ </div>
+</div>
+
+<!-- 07 · J'ai le bail -->
+<section class="fin" id="fin" aria-labelledby="m-title">
+  <div class="m-stage" id="m-stage">
+  <p class="eb">Le lendemain matin</p>
+  <p class="fin-k">Ta famille attend des nouvelles de la visite.</p>
+  <div class="phone chat" id="chat">
+    <div class="chat-h"><span class="avs" aria-hidden="true"><i>P</i><i>M</i></span><span class="chat-n"><b>Papa et Maman</b><small><i></i>Groupe famille · en ligne</small></span></div>
+    <div class="chat-body" id="chat-body">
+    <div class="convo" id="convo" aria-live="polite">
+      <p class="stamp pop-in" style="--d:.15s">Samedi · 12:47</p>
+      <div class="msg in pop-in" style="--d:.35s"><span class="from">Maman</span><p class="bub">Alors, cette visite ?</p></div>
+      <div class="msg in pop-in" style="--d:.95s"><span class="from">Papa</span><p class="bub">La régie t'a répondu ?</p></div>
+      <div class="msg in pop-in" style="--d:1.5s"><p class="bub">On croise les doigts.</p></div>
+      <p class="stamp pop-in" style="--d:1.95s">Lundi · 09:14</p>
+      <div id="after" style="display:contents"></div>
+    </div>
+    </div>
+    <div class="compose" id="compose">
+      <div class="field" id="c-text">Papa, maman, j'ai le bail.</div>
+      <button class="send" id="send" type="button" aria-label="Maintiens pour envoyer le message">
+        <svg class="ring" viewBox="0 0 48 48" aria-hidden="true"><circle class="rb" cx="24" cy="24" r="21"/><circle class="rf" id="ring" cx="24" cy="24" r="21"/></svg>
+        <svg class="arrow" id="send-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5.5M6.5 11 12 5.5 17.5 11"/></svg>
+      </button>
+    </div>
+  </div>
+  <p class="c-hint" id="c-hint">Maintiens le bouton pour envoyer. <em>Celui-là, c'est toi qui l'envoies.</em></p>
+  </div>
+  <div class="m-end" id="m-end">
+    <h2 class="m-title" id="m-title">Papa, maman, j'ai le <button class="chip-morph" id="morph" type="button" aria-label="bail"><span class="cm-word" aria-hidden="true">bail</span><span class="cm-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4.3" fill="none" stroke="currentColor" stroke-width="2.6"/><path d="M12.3 12H21M17.6 12v3.4M20.6 12v2.6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg></span></button>.</h2>
+    <p class="lead">Ton premier chez-toi commence par une phrase. Tes agents s'occupent du reste.</p>
+    <div class="m-actions"><a class="btn" href="#recherche" data-go="0" id="m-cta">Commencer ma recherche</a><button class="btn-line" id="resend" type="button" hidden>Renvoyer le message</button></div>
+  </div>
+</section>
+
+<section class="after" aria-labelledby="faq-t">
+  <div class="in">
+    <p class="fq-eb"><i></i>Questions fréquentes</p>
+    <h2 id="faq-t" class="fq-h">Tes questions</h2>
+    <div class="faq" id="faq">
+      <div class="fq open">
+        <h3><button class="fq-q" type="button" aria-expanded="true" aria-controls="fq-0"><span class="fq-t">Combien ça coûte ?</span><span class="fq-i" aria-hidden="true"></span></button></h3>
+        <div class="fq-a" id="fq-0" role="region"><div><p>L'offre n'est pas encore fixée. Ce prototype ne demande aucun paiement.</p></div></div>
+      </div>
+      <div class="fq">
+        <h3><button class="fq-q" type="button" aria-expanded="false" aria-controls="fq-1"><span class="fq-t">Je n'ai pas de garant, c'est possible ?</span><span class="fq-i" aria-hidden="true"></span></button></h3>
+        <div class="fq-a" id="fq-1" role="region"><div><p>Oui. Dossiers reçus peut s'appuyer sur un garant de ta famille, sur une garantie publique comme Visale, ou sur tes seuls revenus. Tes agents t'indiquent ce qui renforce ton dossier.</p></div></div>
+      </div>
+      <div class="fq">
+        <h3><button class="fq-q" type="button" aria-expanded="false" aria-controls="fq-2"><span class="fq-t">Sur quels sites cherchent les agents ?</span><span class="fq-i" aria-hidden="true"></span></button></h3>
+        <div class="fq-a" id="fq-2" role="region"><div><p>À terme, sur plusieurs plateformes d'annonces partenaires. Dans ce prototype, les plateformes, les régies et les annonces sont fictives.</p></div></div>
+      </div>
+      <div class="fq">
+        <h3><button class="fq-q" type="button" aria-expanded="false" aria-controls="fq-3"><span class="fq-t">Que deviennent mes documents ?</span><span class="fq-i" aria-hidden="true"></span></button></h3>
+        <div class="fq-a" id="fq-3" role="region"><div><p>Ils servent uniquement à tes participantures, et tu peux les supprimer à tout moment depuis ton espace. Dans ce prototype, aucun fichier n'est envoyé.</p></div></div>
+      </div>
+      <div class="fq">
+        <h3><button class="fq-q" type="button" aria-expanded="false" aria-controls="fq-4"><span class="fq-t">Les agents peuvent-ils signer ou payer à ma place ?</span><span class="fq-i" aria-hidden="true"></span></button></h3>
+        <div class="fq-a" id="fq-4" role="region"><div><p>Non. Ils cherchent, préparent, vérifient et suivent. Choisir, signer et payer restent tes décisions.</p></div></div>
+      </div>
+      <div class="fq">
+        <h3><button class="fq-q" type="button" aria-expanded="false" aria-controls="fq-5"><span class="fq-t">C'est seulement pour un premier logement ?</span><span class="fq-i" aria-hidden="true"></span></button></h3>
+        <div class="fq-a" id="fq-5" role="region"><div><p>C'est pensé pour le premier, et ça marche aussi pour les suivants.</p></div></div>
+      </div>
+    </div>
+    <div class="fq-ask" id="fq-ask">
+      <div class="fqa-h"><span class="fqa-ic" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4.5 6.5A2.5 2.5 0 0 1 7 4h10a2.5 2.5 0 0 1 2.5 2.5v7A2.5 2.5 0 0 1 17 16h-6.2L6.5 19.5V16H7a2.5 2.5 0 0 1-2.5-2.5z"/><path d="M8.5 8.8h7M8.5 11.6h4.5"/></svg></span><span><b>Une autre question ?</b><small>Écris-la ici, l'équipe te répond.</small></span></div>
+      <form class="fq-f" id="fq-f"><textarea id="fq-in" rows="2" aria-label="Ta question" placeholder="Écris ta question… par exemple : est-ce que ça marche pour une colocation ?"></textarea><button class="fq-send" type="submit" disabled>Envoyer<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg></button></form>
+      <p class="fq-done" id="fq-done" hidden>✓ Merci, ta question est bien notée. Elle aura sa réponse ici. <small>Prototype : rien n'est envoyé pour l'instant.</small></p>
+    </div>
+  </div>
+  <footer class="foot"><a class="lockup" href="#recherche" data-go="0"><img src="hirondelle-icone.jpg" alt=""><span class="wm" aria-label="Piaule Fiction">P<span class="i">ı</span>aule F<span class="i">ı</span>ct<span class="i">ı</span>on</span></a><button class="js-trailer" type="button">Voir la bande-annonce</button><span class="foot-l"><a href="mentions-legales.html">Mentions légales</a><a href="confidentialite.html">Confidentialité</a></span><span>Démonstration : annonces et données fictives</span></footer>
+</section>
+</main>
+
+<div class="trailer" id="trailer" role="dialog" aria-modal="true" aria-label="Bande-annonce Piaule Fiction" hidden>
+  <video id="trailer-v" playsinline controls preload="none"></video>
+  <p class="trailer-wait" id="trailer-wait">Chargement de la bande-annonce…</p>
+  <button class="trailer-x" id="trailer-x" type="button" aria-label="Fermer la bande-annonce"><svg viewBox="0 0 14 14"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.6" fill="none"/></svg></button>
+  <p class="trailer-credit">Musiques « Decisions », « Floating Cities », « Skye Cuillin », « Long Road Ahead », « Sleep and Then » par Kevin MacLeod (incompetech.com), CC BY 4.0 · sons Wikimedia Commons : clavier par C40115 (CC BY 4.0), chants d'oiseaux par Matutinho (CC BY-SA 4.0), autres CC0 et domaine public</p>
+</div>
+<div class="esp" id="esp" role="dialog" aria-modal="true" aria-labelledby="esp-t" hidden>
+  <div class="esp-in cpt">
+    <button class="esp-x" id="esp-x" type="button" aria-label="Fermer"><svg viewBox="0 0 14 14"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.6" fill="none"/></svg></button>
+    <div class="cpt-head">
+      <img class="cpt-av" src="hirondelle-icone.jpg" alt="">
+      <p class="esp-k" id="cpt-k">Ton workspace propriétaire</p>
+    </div>
+    <h3 id="esp-t"><span id="cpt-h">Crée ton compte.</span><br><em id="cpt-em">Tes agents s'occupent du reste.</em></h3>
+    <div class="cpt-q" id="cpt-q" hidden><small>Tes biens est gardée</small><span id="cpt-qt"></span></div>
+    <p class="wl-p" id="cpt-p">Un compte, et tu retrouves ta recherche, ton dossier et tes participantures au même endroit.</p>
+    <form class="wl-f" id="cpt-f" novalidate>
+      <label class="wl-l" id="cpt-pre"><span>Prénom</span><input name="prenom" autocomplete="given-name" maxlength="40" placeholder="Ton prénom"></label>
+      <label class="wl-l"><span>E-mail</span><input name="email" type="email" autocomplete="email" inputmode="email" maxlength="120" placeholder="toi@exemple.fr"></label>
+      <label class="wl-l cpt-pw"><span>Mot de passe</span><input name="mdp" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="8 caractères minimum"><button class="cpt-eye" id="cpt-eye" type="button" aria-label="Afficher le mot de passe" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg></button></label>
+      <label class="wl-c" id="cpt-acc"><input type="checkbox" name="accord"><span>J'accepte que Piaule Fiction garde ces informations pour gérer mon compte. <a href="confidentialite.html" target="_blank" rel="noopener">Confidentialité</a></span></label>
+      <input class="wl-hp" name="site" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <p class="wl-err" id="cpt-err" role="alert" hidden></p>
+      <button class="btn wl-go" id="cpt-go" type="submit"><span id="cpt-gol">Créer mon compte</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+    </form>
+    <p class="cpt-sw"><span id="cpt-swt">Déjà un compte ?</span> <button type="button" id="cpt-sw">Se connecter</button></p>
+    <button class="wl-alt" id="esp-go" type="button">Voir d'abord comment ça marche</button>
+  </div>
+</div>
+<canvas class="confetti" id="confetti" hidden></canvas>

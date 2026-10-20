@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <meta
+      name="description"
+      content="Piaule Fiction — une équipe d’agents IA pour aider les propriétaires à gérer leurs biens."
+    />
+    <title>Piaule Fiction — Owner agent workspace</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="#dashboard" aria-label="Piaule Fiction, accueil">
+            <span class="brand-mark">PF</span>
+            <span>
+              <strong>Piaule Fiction</strong>
+            <small>l'équipe personnelle pour trouver son logement</small>
+          </span>
+        </a>
+
+        <nav class="main-nav" aria-label="Navigation principale">
+          <button class="nav-item active" data-view="dashboard"><span>01</span> Vue d’ensemble</button>
+          <button class="nav-item" data-view="objectives"><span>02</span> Parcours produit</button>
+          <button class="nav-item" data-view="personal"><span>03</span> Studio personnel</button>
+          <button class="nav-item" data-view="processes"><span>04</span> Parcours d’un bien</button>
+          <button class="nav-item" data-view="skills"><span>05</span> Agents de gestion</button>
+          <button class="nav-item" data-view="architecture"><span>06</span> Connecteurs & droits</button>
+          <button class="nav-item" data-view="rules"><span>07</span> Cadre produit</button>
+          <button class="nav-item" data-view="resources"><span>08</span> Ressources</button>
+          <button class="nav-item" data-view="strategy"><span>09</span> Pilotage du projet</button>
+          <button class="nav-item" data-view="subscriptions"><span>10</span> Comptes & dépendances</button>
+        </nav>
+
+        <div class="sidebar-foot">
+          <p>Propriétaire-first · agents IA</p>
+          <p>Données synthétiques · validations visibles</p>
+        </div>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <button id="menuToggle" class="menu-toggle" aria-label="Ouvrir le menu">☰</button>
+          <div>
+            <p class="eyebrow">PIAULE FICTION / OWNER AGENT STUDIO</p>
+            <h1 id="pageTitle">Le centre de gestion assistée</h1>
+          </div>
+          <div class="top-actions">
+            <button id="copySummary" class="button secondary">Copier le brief</button>
+            <button id="exportProgress" class="button">Exporter la vision</button>
+          </div>
+        </header>
+
+        <section id="dashboardView" class="view active" aria-labelledby="pageTitle">
+          <div class="hero-grid">
+            <article class="hero-card">
+              <p class="eyebrow">GESTION LOCATIVE, ASSISTÉE PAR DES AGENTS</p>
+              <h2>Tes biens avancent pendant que tes agents préparent le travail.</h2>
+              <p>
+                Piaule Fiction structure tes biens, suit les candidatures, contrôle les dossiers et prépare les prochaines actions.
+                Les agents travaillent en arrière-plan, tandis que tu gardes les décisions, les validations et les actes qui t’appartiennent.
+              </p>
+              <div class="hero-actions">
+                <a class="button" href="../frontend/owner-agent-preview.html">Ouvrir le workspace propriétaire <span>↗</span></a>
+                <span class="hero-note"><i></i> Prototype vivant · données fictives</span>
+              </div>
+              <div class="pill-row">
+                <span>multi-biens</span><span>dossiers structurés</span><span>actions validées</span><span>audit lisible</span>
+              </div>
+              <div class="hero-visual" aria-hidden="true">
+                <div class="visual-glow"></div>
+                <div class="visual-orbit orbit-one"></div>
+                <div class="visual-orbit orbit-two"></div>
+                <div class="visual-card visual-card-back"><small>02 / REVIEW</small><strong>Documents vérifiés</strong></div>
+                <div class="visual-card visual-card-front"><small>01 / INBOX</small><strong>Une candidature arrive</strong><span>Extraction · preuves · prochaine action</span></div>
+                <div class="visual-chip">✦ <span>humain au centre</span></div>
+              </div>
+            </article>
+            <article class="progress-card">
+              <div class="progress-head">
+                <span>Produit en mouvement</span>
+                <strong id="overallPercent">0%</strong>
+              </div>
+              <div class="progress-track" aria-label="Progression globale">
+                <div id="overallBar" class="progress-fill"></div>
+              </div>
+              <div class="stat-grid">
+                <div><strong id="doneCount">0</strong><span>livrées</span></div>
+                <div><strong id="doingCount">0</strong><span>en création</span></div>
+                <div><strong id="blockedCount">0</strong><span>à débloquer</span></div>
+              </div>
+              <div class="progress-caption"><span class="pulse-dot"></span> L’expérience se construit en continu</div>
+            </article>
+          </div>
+
+          <section class="experience-grid" aria-label="Aperçu de l'expérience agenda">
+            <article class="experience-card availability-card">
+              <div class="experience-heading">
+                <div>
+                  <p class="eyebrow">DISPONIBILITÉS, À VOTRE FAÇON</p>
+                  <h2>Un agenda qui s’adapte à la réalité.</h2>
+                </div>
+                <span class="status-pill"><i></i> configuration claire</span>
+              </div>
+              <p class="experience-copy">Connectez un agenda existant ou décrivez simplement vos horaires. Piaule Fiction ne force aucun outil.</p>
+              <div class="availability-modes" role="list" aria-label="Modes de disponibilité">
+                <div class="availability-mode active" role="listitem"><span class="mode-icon">✦</span><strong>Emploi du temps</strong><small>Règles récurrentes</small></div>
+                <div class="availability-mode" role="listitem"><span class="mode-icon">G</span><strong>Google Calendar</strong><small>Lecture seule</small></div>
+                <div class="availability-mode" role="listitem"><span class="mode-icon">○</span><strong>Autres agendas</strong><small>Apple · Outlook · ICS</small></div>
+              </div>
+              <div class="week-preview">
+                <div class="week-preview-head"><span>Cette semaine</span><span>Europe / Paris</span></div>
+                <div class="week-row"><span>Lun</span><div class="week-line"><i style="width: 25%"></i></div><small>18:00 — 19:00</small></div>
+                <div class="week-row highlighted"><span>Mar</span><div class="week-line"><i style="width: 64%"></i></div><small>17:00 — 20:00</small></div>
+                <div class="week-row"><span>Mer</span><div class="week-line"><i style="width: 25%"></i></div><small>18:00 — 19:00</small></div>
+                <div class="week-row"><span>Jeu</span><div class="week-line"><i style="width: 64%"></i></div><small>17:00 — 20:00</small></div>
+              </div>
+            </article>
+            <article class="experience-card workflow-card">
+              <p class="eyebrow">LE PARCOURS</p>
+              <h3>Du premier message à la visite.</h3>
+              <div class="workflow-line">
+                <div class="workflow-step done"><span>01</span><strong>Réception</strong><small>Une candidature arrive</small></div>
+                <div class="workflow-step active"><span>02</span><strong>Relecture</strong><small>Les preuves sont liées</small></div>
+                <div class="workflow-step"><span>03</span><strong>Validation</strong><small>L’humain décide</small></div>
+                <div class="workflow-step"><span>04</span><strong>Visite</strong><small>Un créneau est proposé</small></div>
+              </div>
+              <div class="workflow-footer"><span>Chaque étape reste compréhensible.</span><b>→</b></div>
+            </article>
+          </section>
+
+          <section class="agent-presence-section" aria-labelledby="agentPresenceTitle">
+            <div class="section-lead compact">
+              <p class="eyebrow">PRÉSENCE DES AGENTS DE GESTION</p>
+              <h2 id="agentPresenceTitle">Les agents travaillent en arrière-plan et remontent seulement les actions utiles.</h2>
+              <p>Le propriétaire voit l’activité des agents, leurs preuves et les actions nécessaires sans devoir surveiller chaque dossier ou chaque canal.</p>
+            </div>
+            <div class="agent-presence-grid">
+              <article class="presence-card host-card">
+                <div class="presence-window-top"><span class="presence-logo">F</span><strong>Ton espace de recherche</strong><span class="presence-dots">•••</span></div>
+                <div class="presence-window-body"><span class="presence-line wide"></span><span class="presence-line"></span><span class="presence-line short"></span><div class="agent-badge"><i></i><strong>4 agents actifs</strong><small>23 annonces · 1 action à valider</small></div></div>
+                <p><strong>Dans le workspace propriétaire</strong>Les agents restent visibles, avec leurs preuves, leurs permissions et leur prochaine action.</p>
+              </article>
+              <article class="presence-card agent-console-card">
+                <div class="console-head"><span class="agent-avatar">✦</span><div><strong>Agent Dossier</strong><small>Protection et vérification</small></div><span class="online-dot">En ligne</span></div>
+                <div class="agent-message"><small>Action nécessaire</small><strong>Une pièce manque au dossier</strong><span>L’agent prépare une demande ciblée au garant, sans exposer les autres documents.</span><button class="mini-action">Voir les preuves →</button></div>
+                <p><strong>Dans son espace dédié</strong>Le propriétaire voit ce qui est fait, ce qui est bloqué et ce qui lui revient, sans piloter chaque outil.</p>
+              </article>
+              <article class="presence-card action-card">
+                <p class="eyebrow">CE QUE L’UTILISATEUR PEUT LUI DIRE</p>
+                <div class="command-bubble">« Prépare les dossiers complets et propose les prochaines visites. »</div>
+                <div class="command-result"><i></i><span><strong>6 dossiers à traiter</strong><small>2 prêts pour comparaison, 1 incohérence à vérifier</small></span></div>
+                <p><strong>Une communication contrôlée</strong>Les réponses viennent des données et règles du dossier, pas d’une mémoire opaque.</p>
+                <a class="button secondary presence-link" href="../frontend/owner-agent-preview.html">Tester cette expérience ↗</a>
+              </article>
+            </div>
+          </section>
+
+          <section class="calendar-roadmap-section" aria-labelledby="calendarRoadmapTitle">
+            <div class="section-lead compact">
+              <p class="eyebrow">RECHERCHE MULTI-SOURCES · PROGRESSION</p>
+              <h2 id="calendarRoadmapTitle">Tout ce qu’il faut suivre avant qu’une action ne devienne un oubli.</h2>
+              <p>Cette feuille de route suit les biens, dossiers, agents, connecteurs, validations et visites à construire.</p>
+            </div>
+            <div id="calendarRoadmapGrid" class="calendar-roadmap-grid"></div>
+          </section>
+
+          <article class="guardrail-card objective-guardrail">
+            <p class="eyebrow">RÈGLE DE PROGRESSION</p>
+            <h3>Chaque tâche validée débloque automatiquement la suivante.</h3>
+            <p>Quand une étape est terminée et vérifiée, la prochaine action doit être identifiée et proposée sans attendre une nouvelle relance. Le dashboard conserve l’ordre, l’état et la prochaine production.</p>
+          </article>
+
+          <section class="objectives-section" aria-labelledby="objectivesTitle">
+            <div class="section-lead compact">
+              <p class="eyebrow">RÉSULTAT FINAL</p>
+              <h2 id="objectivesTitle">Les objectifs qui remplacent la limite de temps</h2>
+              <p>Il n’y a plus d’objectif par jour : l’avancement se mesure par les capacités livrées et vérifiées.</p>
+            </div>
+            <div id="dashboardObjectivesGrid" class="objectives-grid"></div>
+          </section>
+
+          <article class="guardrail-card objective-guardrail">
+            <p class="eyebrow">LIGNE ROUGE</p>
+            <h3>L’agent propose, l’humain autorise.</h3>
+            <p>
+              L’IA prépare les informations, les relances, les comparaisons et les rapports. L’humain
+              valide les faits, les décisions sensibles, les dépenses et les signatures.
+            </p>
+            <p>
+              Aucun vrai dossier candidat avant les tests d’isolation des accès, la décision d’hébergement,
+              la politique de suppression, la vérification des pièces autorisées et une revue professionnelle
+              de la confidentialité et du périmètre juridique.
+            </p>
+          </article>
+
+          <article class="today-card">
+            <p class="eyebrow">JOURNAL · 16 OCTOBRE 2026</p>
+            <h3>Le cockpit propriétaire devient prioritaire</h3>
+            <p>La première version publique sert à recueillir des retours pendant que le cockpit propriétaire se construit avec des données synthétiques.</p>
+            <ul>
+              <li>Landing page Piaule Fiction publiée pour les premiers retours.</li>
+              <li>Workspace propriétaire défini comme chantier actif.</li>
+              <li>Portefeuille, dossiers, agents, validations et visites à visualiser avant le backend.</li>
+              <li>Architecture de confiance, confidentialité et notion de hors marché documentées.</li>
+              <li>Backlog de différenciation intégré : DossierFacile, droits, score expliqué, alertes, visites et après-bail.</li>
+              <li>Les réponses synthétiques du frontend devront reprendre les futurs contrats du workspace.</li>
+              <li>Sources d'annonces, paiements et authentification réelle restent désactivés.</li>
+            </ul>
+            <p><strong>Prochaine étape :</strong> terminer le cockpit propriétaire, puis remplacer progressivement les données synthétiques par les réponses du backend. Les extensions viendront après la validation du premier workflow.</p>
+            <p><a href="../docs/PRODUCT_BACKLOG_DIFFERENTIATION.md">Lire le backlog complet de différenciation</a></p>
+          </article>
+        </section>
+
+        <section id="objectivesView" class="view">
+          <div class="section-lead">
+            <p class="eyebrow">PRODUIT FINAL</p>
+            <h2>Objectifs fonctionnels</h2>
+            <p>Chaque objectif correspond à une capacité testable du futur outil, sans imposer une date artificielle.</p>
+          </div>
+          <div id="objectivesGrid" class="objectives-grid objectives-grid-large"></div>
+        </section>
+
+        <section id="personalView" class="view">
+          <div class="section-lead">
+            <p class="eyebrow">TA PROGRESSION</p>
+            <h2>Objectifs personnels</h2>
+            <p>Le numéro indique l’ordre logique, pas une date limite. Tu avances sur une mission quand tu as le temps disponible, puis tu passes à la suivante.</p>
+          </div>
+          <div id="personalFocus" class="personal-focus"></div>
+          <div id="personalObjectivesGrid" class="personal-objectives-grid"></div>
+        </section>
+
+        <section id="processesView" class="view">
+          <div class="section-lead">
+            <p class="eyebrow">RECHERCHE PRODUIT</p>
+            <h2>Les procédures que des agents peuvent assister</h2>
+            <p>
+              Le MVP couvre les biens, dossiers, agents, validations et visites. Les extensions
+              viennent après la validation de ce parcours.
+            </p>
+          </div>
+          <div class="legend">
+            <span><i class="dot agent"></i> Agent LLM</span>
+            <span><i class="dot rule"></i> Règle déterministe</span>
+            <span><i class="dot human"></i> Validation humaine</span>
+          </div>
+          <div id="processTable" class="table-wrap"></div>
+        </section>
+
+        <section id="skillsView" class="view">
+          <div class="section-lead">
+            <p class="eyebrow">CAPACITÉS → PREUVES</p>
+            <h2>Ce que le produit doit savoir faire</h2>
+            <p>Chaque capacité doit être reliée à une fonction, un test ou une démonstration de Piaule Fiction.</p>
+          </div>
+          <div id="skillsGrid" class="skills-grid"></div>
+        </section>
+
+        <section id="architectureView" class="view">
+          <div class="section-lead">
+            <p class="eyebrow">CONCEPTION CIBLE · CONFIANCE</p>
+            <h2>Le moteur qui cherche, vérifie et protège</h2>
+            <p>Le propriétaire configure ses biens et règles, les sources alimentent un format commun, puis les règles et les agents expliquent ce qui est complet, incohérent ou impossible à vérifier. Piaule Fiction ne promet jamais une certification absolue : elle montre les faits et aide à décider.</p>
+          </div>
+          <div class="architecture-flow" aria-label="Architecture d'intégration de Piaule Fiction">
+            <div class="arch-node browser"><strong>Workspace propriétaire</strong><span>Biens, règles et permissions</span></div>
+            <div class="arch-arrow">→</div>
+            <div class="arch-node api"><strong>Adaptateurs de sources</strong><span>API, flux autorisés ou e-mail</span></div>
+            <div class="arch-arrow">→</div>
+            <div class="arch-node queue"><strong>Annonces normalisées</strong><span>Provenance et dédoublonnage</span></div>
+            <div class="arch-arrow">→</div>
+            <div class="arch-node agent-layer"><strong>Règles + agents</strong><span>Marché, risque, matching</span></div>
+            <div class="arch-arrow">→</div>
+            <div class="arch-node agent-layer"><strong>Action auditée</strong><span>Dossier, validation ou visite</span></div>
+          </div>
+          <div class="architecture-support">
+            <div class="arch-node data"><strong>Coffre documentaire</strong><span>Versions, accès ciblés et révocation</span></div>
+            <div class="arch-node events"><strong>Passerelle IA</strong><span>Modèles interchangeables et budget</span></div>
+            <div class="arch-node audit"><strong>Journal d'audit</strong><span>Action, preuve, coût et consentement</span></div>
+          </div>
+          <div class="trust-grid">
+            <article>
+              <p class="eyebrow">01 · PRODUIT</p>
+              <h3>Comment ça fonctionne</h3>
+              <ol>
+                <li>Le propriétaire décrit ses biens et ses règles.</li>
+                <li>Les sources autorisées sont surveillées.</li>
+                <li>Les annonces sont normalisées, comparées et dédoublonnées.</li>
+                <li>Les agents expliquent le matching, les risques et la prochaine action.</li>
+              </ol>
+            </article>
+            <article>
+              <p class="eyebrow">02 · ANTI-ARNAQUE</p>
+              <h3>Ce que l'agent peut réellement conclure</h3>
+              <p>Il relève les prix atypiques, demandes de paiement, domaines suspects, incohérences, annonces copiées et informations manquantes.</p>
+              <div class="risk-levels"><span class="risk-normal">Normal</span><span class="risk-check">À vérifier</span><span class="risk-high">Risque élevé</span><span class="risk-unknown">Non vérifiable</span></div>
+              <p class="trust-note">Un indice déclenche une vérification ; il ne devient pas automatiquement une accusation.</p>
+            </article>
+            <article>
+              <p class="eyebrow">03 · CONFIDENTIALITÉ</p>
+              <h3>Le dossier reste sous contrôle</h3>
+              <ul>
+                <li>Isolation stricte entre workspaces.</li>
+                <li>Documents versionnés dans un coffre privé.</li>
+                <li>Partage limité à un destinataire et une durée.</li>
+                <li>Clés IA et connecteurs conservées uniquement côté backend.</li>
+                <li>Suppression, révocation et audit testables.</li>
+              </ul>
+            </article>
+          </div>
+          <article class="market-definition-card">
+            <div>
+              <p class="eyebrow">04 · HORS MARCHÉ</p>
+              <h3>Une annonce peut être atypique sans être frauduleuse.</h3>
+              <p>Le moteur compare des dossiers rattachés au même bien. Il distingue les critères configurés, les preuves disponibles, les inconnues et les alertes sans produire de décision opaque.</p>
+            </div>
+            <div class="market-statuses">
+              <div><strong>Hors critères</strong><span>Une règle obligatoire n'est pas respectée.</span></div>
+              <div><strong>Atypique marché</strong><span>Le prix ou les caractéristiques s'éloignent des comparables.</span></div>
+              <div><strong>Non vérifiable</strong><span>Les preuves disponibles ne permettent pas de conclure.</span></div>
+            </div>
+          </article>
+          <article class="feasibility-card">
+            <div class="feasibility-copy">
+              <p class="eyebrow">05 · ÉTUDE DE FAISABILITÉ</p>
+              <h3>Ne jamais laisser une recherche se terminer sur un écran vide.</h3>
+              <p>Avant de lancer les agents, Piaule Fiction traduit l’intention du propriétaire, vérifie le périmètre et explique ce qui bloque. Le propriétaire conserve la décision et peut modifier les règles.</p>
+            </div>
+            <div class="feasibility-panel" aria-label="Exemple d'étude de faisabilité">
+              <div class="feasibility-panel-head"><span>Lecture du projet</span><strong>FAISABLE MAIS TENDU</strong></div>
+              <div class="feasibility-meter"><i style="width: 34%"></i></div>
+              <p><strong>Budget : 800 €</strong> · <strong>45 m²</strong> · <strong>Paris 11e</strong></p>
+              <small>8 annonces comparables observées · données récentes · 1 match vérifié</small>
+              <div class="feasibility-options"><button>Élargir la zone</button><button>Réduire la surface</button><button>Activer une alerte</button></div>
+            </div>
+          </article>
+          <div class="security-grid">
+            <article>
+              <h3>Un socle local avant les connexions réelles</h3>
+              <ul>
+                <li>Prototype et API locale avec données synthétiques.</li>
+                <li>Authentification, stockage et connecteurs séparés du moteur produit.</li>
+                <li>Secrets hors Git et permissions minimales par source.</li>
+                <li>Aucun paiement, message ou dépôt réel pendant le prototypage.</li>
+                <li>Déploiement public seulement après revue de sécurité et de confidentialité.</li>
+              </ul>
+            </article>
+            <article>
+              <h3>Données & conformité</h3>
+              <ul>
+                <li>Données synthétiques pendant toute la construction.</li>
+                <li>Minimisation, durée de conservation et suppression testable.</li>
+                <li>Chiffrement en transit, secrets hors Git, logs sans pièces personnelles.</li>
+                <li>Décision locative et communication externe soumises à validation humaine.</li>
+                <li>Aucune certification revendiquée avant un audit adapté au produit.</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section id="rulesView" class="view">
+          <div class="section-lead">
+            <p class="eyebrow">DROIT FRANÇAIS · VERSIONNÉ ET TESTABLE</p>
+            <h2>Le LLM lit les documents ; le moteur de règles applique le droit</h2>
+            <p>
+              Ces règles servent de spécification logicielle au prototype. Chaque entrée possède une source
+              officielle, une date de vérification, un comportement attendu et un test. Elles devront être
+              revues avant toute utilisation réelle ou changement de périmètre juridique.
+            </p>
+          </div>
+          <div class="legal-banner">
+            <strong>Périmètre initial :</strong> location privée constituant la résidence principale en France.
+            Sont exclus du MVP : logement social, location saisonnière, bail commercial, convention Anah et
+            décision juridique automatisée.
+          </div>
+          <div id="rulesGrid" class="rules-grid"></div>
+        </section>
+
+        <section id="resourcesView" class="view">
+          <div class="section-lead">
+            <p class="eyebrow">SÉLECTION GUIDÉE</p>
+            <h2>Vidéos, documentations et références</h2>
+            <p>Ne regarde pas tout intégralement. Chaque ressource est reliée à un livrable : arrête la théorie dès que tu peux construire.</p>
+          </div>
+          <div id="resourcesGrid" class="resources-grid"></div>
+        </section>
+
+        <section id="strategyView" class="view">
+          <div class="section-lead">
+            <p class="eyebrow">VISION À 360° · PRODUIT ET ENTREPRISE</p>
+              <h2>Construire une équipe d’agents de gestion, pas un chatbot de plus à surveiller.</h2>
+              <p>
+              Cette vue rassemble les chantiers qui donnent de la valeur à Piaule Fiction : surveiller les sources,
+              structurer les biens et les documents, contrôler les dossiers, préparer les actions et accompagner
+              la personne jusqu’à la visite.
+            </p>
+          </div>
+
+          <div class="strategy-focus">
+            <article class="strategy-focus-main">
+              <p class="eyebrow">PRIORITÉ PRODUIT · CŒUR MVP</p>
+              <h3>Un propriétaire configure son bien, les agents préparent le reste.</h3>
+              <p>Les connecteurs reçoivent les informations autorisées, les agents les rattachent au bien, contrôlent les dossiers, préparent les messages et proposent les visites.</p>
+              <div class="strategy-flow"><span>Workspace propriétaire</span><b>→</b><span>Sources</span><b>→</b><span>Agents + règles</span><b>→</b><span>Dossier protégé</span><b>→</b><span>Visite</span></div>
+            </article>
+            <article class="strategy-focus-side">
+              <p class="eyebrow">PACKAGING APRÈS LE MVP</p>
+              <h3>Étendre la valeur par modules.</h3>
+              <ol>
+                <li><strong>Colocation</strong><span>groupes, profils liés et dossiers séparés</span></li>
+                <li><strong>Plus de sources</strong><span>API, flux partenaires et connecteurs autorisés</span></li>
+                <li><strong>Colocation</strong><span>groupes, profils liés et consentements</span></li>
+                <li><strong>Application mobile</strong><span>dépôt et validation depuis le téléphone</span></li>
+                <li><strong>Réseau de confiance</strong><span>sécurité, preuves, révocation et audit</span></li>
+              </ol>
+            </article>
+          </div>
+
+          <div id="strategySummary" class="strategy-summary"></div>
+
+          <div class="strategy-principles">
+            <article>
+              <span class="principle-mark">01</span>
+              <div><h3>Observer avant de construire</h3><p>Chaque nouvelle fonction doit partir d’un problème locatif documenté, d’un retour utilisateur ou d’une contrainte métier.</p></div>
+            </article>
+            <article>
+              <span class="principle-mark">02</span>
+              <div><h3>Relier chaque promesse à une preuve</h3><p>Une démonstration, un test, une source juridique ou un retour terrain doit montrer que la fonction tient ses promesses.</p></div>
+            </article>
+            <article>
+              <span class="principle-mark">03</span>
+              <div><h3>Grandir sans perdre la confiance</h3><p>Les données, les coûts, les accès et les décisions humaines doivent rester lisibles lorsque le produit passe à l’échelle.</p></div>
+            </article>
+          </div>
+
+          <div id="strategyGrid" class="strategy-grid"></div>
+
+          <article class="strategy-next-card">
+            <p class="eyebrow">ORDRE DE TRAVAIL RECOMMANDÉ</p>
+            <h3>Prochaine tâche : construire la page d'accueil puis le profil de recherche.</h3>
+            <p>Le site doit d’abord rendre le cockpit propriétaire concret. Nous relierons ensuite biens, dossiers, agents, connecteurs et validations au backend.</p>
+          </article>
+        </section>
+
+        <section id="subscriptionsView" class="view">
+          <div class="section-lead">
+            <p class="eyebrow">VISIBILITÉ DES COÛTS</p>
+            <h2>Ce qui fait tourner Piaule Fiction</h2>
+            <p>
+              Cet onglet sépare les services déjà utilisés, les comptes à configurer, les outils prévus
+              et les dépendances open source. Un service marqué « à confirmer » ne signifie pas qu’un
+              paiement a déjà été effectué.
+            </p>
+          </div>
+
+          <div class="dependency-summary">
+            <article class="dependency-summary-card confirmed"><strong>1</strong><span>service actuellement identifié comme payé</span></article>
+            <article class="dependency-summary-card setup"><strong>3</strong><span>connexions externes à configurer</span></article>
+            <article class="dependency-summary-card open"><strong>8</strong><span>briques open source ou incluses</span></article>
+          </div>
+
+          <div class="dependency-notice">
+            <span class="notice-icon">i</span>
+            <p><strong>Lecture actuelle :</strong> les connexions externes ne sont pas nécessaires pour la prévisualisation. Les coûts, comptes et fournisseurs seront décidés après validation du produit. Aucun secret ni moyen de paiement ne doit apparaître dans ce dépôt.</p>
+          </div>
+
+          <div class="dependency-table-wrap">
+            <table class="dependency-table">
+              <thead>
+                <tr><th>Élément</th><th>Rôle</th><th>État</th><th>Ce qu’il faudra vérifier</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Sources d'annonces</strong><small>Connecteurs futurs</small></td>
+                  <td>Récupérer les annonces dans les conditions autorisées par chaque plateforme.</td>
+                  <td><span class="dependency-status planned">À étudier</span></td>
+                  <td>API, flux, permissions, coût et limites avant toute intégration.</td>
+                </tr>
+                <tr>
+                  <td><strong>API locale Piaule Fiction</strong><small>FastAPI · Uvicorn</small></td>
+                  <td>Contrats de workspace, biens, candidatures, actions et visites.</td>
+                  <td><span class="dependency-status building">En construction</span></td>
+                  <td>Relier le prototype frontend puis ajouter l'authentification et le stockage.</td>
+                </tr>
+                <tr>
+                  <td><strong>Interface web</strong><small>HTML · CSS · JavaScript</small></td>
+                  <td>Prototype propriétaire, portefeuille, pipeline et suivi des actions.</td>
+                  <td><span class="dependency-status building">En construction</span></td>
+                  <td>Hébergement frontend, domaine, analytics éventuels et outils de motion design.</td>
+                </tr>
+                <tr>
+                  <td><strong>Outils créatifs</strong><small>Codex · Claude · Higgsfield</small></td>
+                  <td>Conception des visuels, aperçus vidéo et motion design.</td>
+                  <td><span class="dependency-status decision">À décider</span></td>
+                  <td>Abonnements réellement souscrits, crédits restants et usage prévu.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <article class="dependency-next">
+            <p class="eyebrow">PROCHAINE MISE À JOUR</p>
+            <h3>Choisir les connexions après le prototype</h3>
+            <p>Les fournisseurs, coûts, permissions et connecteurs seront décidés une fois le workflow propriétaire validé dans les prototypes.</p>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="data.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

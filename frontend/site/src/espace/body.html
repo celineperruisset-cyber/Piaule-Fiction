@@ -1,0 +1,286 @@
+<div class="sky" aria-hidden="true"><img src="hirondelle-aube.jpg" alt=""></div>
+
+<header class="top">
+  <a class="lockup" href="index.html" aria-label="Piaule Fiction, accueil"><img src="hirondelle-icone.jpg" alt=""><span class="wm" aria-hidden="true">P<span class="i">ı</span>aule F<span class="i">ı</span>ct<span class="i">ı</span>on</span></a>
+  <div class="me" id="me" hidden>
+    <button class="me-b" id="me-b" type="button" aria-expanded="false" aria-controls="me-m"><span class="av" id="me-av">L</span><span class="nm" id="me-nm">Léa</span><svg viewBox="0 0 12 12"><path d="M2.5 4.5L6 8l3.5-3.5"/></svg></button>
+    <div class="me-m" id="me-m" hidden><p><b id="me-pn">Léa</b><span id="me-em"></span></p><button type="button" id="me-out">Se déconnecter</button></div>
+  </div>
+</header>
+
+<!-- Sans compte : on renvoie vers l'accueil -->
+<section class="gate" id="gate" hidden>
+  <div><h1>Ton espace t'attend.</h1><p>Crée ton compte depuis l'accueil pour y entrer.</p><a class="btn" href="index.html">Créer mon compte</a></div>
+</section>
+
+<main id="app" hidden>
+  <!-- La pièce : il vit sa journée en fond, le tableau au mur devient tes annonces, le réveil donne l'heure -->
+  <div class="room" id="room" aria-hidden="true">
+    <video id="room-v" muted playsinline loop preload="auto"></video>
+    <div class="panel" id="panel"><div class="p-in"><div class="p-track" id="p-track"></div></div></div>
+    <div class="room-veil"></div>
+  </div>
+  <!-- La scène : tu vis ta vie, tes agents cherchent, les annonces défilent au mur -->
+  <section class="scene" aria-label="Tes agents">
+    <div class="sc-txt">
+      <p class="eb">Ton workspace propriétaire</p>
+      <h1 id="hi">Bonjour Léa,<br><em id="hi-em">on s'y met ?</em></h1>
+      <p id="hi-p">Dis ce que tu cherches. Tes agents s'occupent du reste.</p>
+      <p class="live" id="live" hidden><i></i><span id="live-t">Tes agents sont prêts</span></p>
+    </div>
+    <div class="wall" id="wall" aria-hidden="true">
+      <div class="w-glow"></div>
+      <div class="w-in">
+        <div class="w-head"><span><i></i>Activité de tes biens</span><small>Aperçu · annonces fictives</small></div>
+        <div class="w-roll"><div class="w-track" id="w-track"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="wrap">
+    <p class="notice"><i></i><span>Piaule Fiction est en construction. Ton compte est prêt : tes agents commenceront à chercher pour de vrai à l'ouverture, on te prévient par e-mail.</span></p>
+    <!-- Ton tableau de bord : une barre d'icônes à gauche, tout ton parcours d'un coup d'œil -->
+    <div class="dash">
+      <aside class="side">
+        <a class="side-brand" href="index.html"><img src="hirondelle-icone.jpg" alt=""><span><b>Piaule Fiction</b><small>Workspace propriétaire</small></span></a>
+        <div class="side-me"><span class="av" id="sd-av">L</span><span><b id="sd-pn">Léa</b><small id="sd-st">Candidat·e</small></span></div>
+        <div class="nav" id="rail" role="tablist" aria-orientation="vertical" aria-label="Ton espace">
+          <button type="button" role="tab" id="t-c-home" aria-controls="c-home" aria-selected="false" aria-label="Tableau de bord"><svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg><span class="lb">Tableau de bord</span><i class="dot" aria-hidden="true"></i></button>
+          <button type="button" role="tab" id="t-c-pro" aria-controls="c-pro" aria-selected="false" aria-label="Ton profil"><svg viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.6"/><path d="M5 20c1.2-3.6 4-5.4 7-5.4s5.8 1.8 7 5.4"/></svg><span class="lb">Ton profil</span><i class="dot" aria-hidden="true"></i></button>
+          <button type="button" role="tab" id="t-c-rech" aria-controls="c-rech" aria-selected="false" aria-label="Tes biens"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg><span class="lb">Tes biens</span><i class="dot" aria-hidden="true"></i></button>
+          <button type="button" role="tab" id="t-c-dos" aria-controls="c-dos" aria-selected="false" aria-label="Dossiers reçus"><svg viewBox="0 0 24 24"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg><span class="lb">Dossiers reçus</span><i class="dot" aria-hidden="true"></i></button>
+          <button type="button" role="tab" id="t-c-ag" aria-controls="c-ag" aria-selected="false" aria-label="Tes agents"><svg viewBox="0 0 24 24"><path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1-5.1-1.9 5.1-1.9z"/><path d="M18.5 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg><span class="lb">Tes agents</span><i class="dot" aria-hidden="true"></i></button>
+          <button type="button" role="tab" id="t-c-vis" aria-controls="c-vis" aria-selected="false" aria-label="Tes visites"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg><span class="lb">Tes visites</span><i class="dot" aria-hidden="true"></i></button>
+        </div>
+        <div class="side-w">
+          <button type="button" class="sw" data-go="4"><span><small>Dossiers traités</small><b>1 284</b></span><i class="sw-bars"><i></i><i></i><i></i><i></i><i></i></i></button>
+          <button type="button" class="sw" data-go="4"><span><small>Tes agents</small><em id="sd-ag">En attente de ta recherche</em></span></button>
+          <button type="button" class="sd-out" id="sd-out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4.5h4a1.5 1.5 0 0 1 1.5 1.5v12a1.5 1.5 0 0 1-1.5 1.5h-4M10 16l4-4-4-4M14 12H4.5"/></svg>Se déconnecter</button>
+        </div>
+      </aside>
+
+      <div class="col">
+        <!-- Le tableau de bord -->
+        <section class="home-p" id="c-home" role="tabpanel" aria-labelledby="t-c-home" hidden>
+          <div class="hm">
+            <div class="hm-main">
+              <div class="h-top">
+                <div><h2 id="h-hi">Bonjour Léa</h2><p id="h-sub">Tes agents veillent pour toi, même quand tu dors. <span class="demo">Aperçu</span></p></div>
+                <div class="h-tools">
+            <!-- Étape 1 : pas encore de recherche, c'est la première chose à faire -->
+            <div class="sc-ask" id="c-ask" hidden>
+            <form class="ask" id="ask" autocomplete="off">
+            <label class="sr" for="ask-in">Décris le bien à gérer</label>
+            <textarea id="ask-in" rows="1" enterkeyhint="send"></textarea>
+            <span class="ph" id="ask-ph" aria-hidden="true"></span>
+            <div class="ask-bar"><button class="go" type="submit"><span>Lancer</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button></div>
+            </form>
+            <p class="err" id="ask-err" role="alert" hidden></p>
+            <div class="ideas" id="ideas"><b>Des idées pour commencer</b></div>
+            </div>
+                  <div class="clock" id="clock" title="L'heure dans sa chambre"><b id="clk">07<i>:</i>00</b></div>
+                  <span class="h-bell"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg><i></i></span>
+                </div>
+              </div>
+
+              <div class="stats">
+                <div class="st"><header><b>Dossiers traités</b><i class="st-ic s-blue"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg></i></header><span class="st-bars" id="sb-1"></span><p><strong>1 284</strong><small>cette semaine</small></p></div>
+                <div class="st"><header><b>Pour toi</b><i class="st-ic s-ok"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7a4.3 4.3 0 0 1 7.5 2.8C19.5 15.4 12 20 12 20z"/></svg></i></header><span class="st-ring"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" pathLength="100"/><circle class="on" cx="50" cy="50" r="40" pathLength="100" stroke-dasharray="86 100"/></svg><b>86 %<small>en moyenne</small></b></span></div>
+                <div class="st"><header><b>Arnaques</b><i class="st-ic s-rust"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/><path d="M9 12.5l2 2 4-4"/></svg></i></header><svg class="st-pulse" viewBox="0 0 160 50" preserveAspectRatio="none"><path d="M0 28h38l6-14 8 30 7-34 7 24 5-6h89"/></svg><p><strong>12</strong><small>écartées</small></p></div>
+                <div class="st"><header><b>Temps gagné</b><i class="st-ic s-blue"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></i></header><span class="st-bars b2" id="sb-2"></span><p><strong>9 h</strong><small>de recherche</small></p></div>
+              </div>
+
+              <div class="mid">
+                <div class="chart">
+                  <header><b>Activité de tes agents</b><small>Cette semaine</small></header>
+                  <svg viewBox="0 0 600 230" preserveAspectRatio="none" aria-hidden="true">
+                    <g class="grid-l"><path d="M40 20H600M40 70H600M40 120H600M40 170H600"/></g>
+                    <g class="ax"><text x="0" y="24">400</text><text x="0" y="74">300</text><text x="0" y="124">200</text><text x="0" y="174">100</text></g>
+                    <defs><linearGradient id="cg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#8EA2FF" stop-opacity=".45"/><stop offset="1" stop-color="#8EA2FF" stop-opacity="0"/></linearGradient></defs>
+                    <path class="area" d="M40 160C80 150 100 120 140 128S200 170 240 140 300 80 340 96 400 150 440 118 500 40 540 52 580 90 600 84V200H40z"/>
+                    <path class="line" d="M40 160C80 150 100 120 140 128S200 170 240 140 300 80 340 96 400 150 440 118 500 40 540 52 580 90 600 84"/>
+                    <circle class="pt" cx="510" cy="44" r="6"/>
+                  </svg>
+                  <span class="bub" style="left:calc(18px + 85% - 30px);top:74px">312 annonces</span>
+                  <div class="days"><span>Lun</span><span>Mar</span><span>Mer</span><span>Jeu</span><span>Ven</span><span>Sam</span><span>Dim</span></div>
+                </div>
+                <button type="button" class="feat" data-go="4">
+                  <img src="photos/annonce-2.jpg" alt="">
+                  <span class="feat-t">
+                    <b>Ta meilleure piste</b>
+                    <span class="feat-l"><strong id="f-rent">690 €</strong><small id="f-what">T2 · 42 m²</small></span>
+                    <span class="feat-l"><strong>94 %</strong><small id="f-where">pour toi</small></span>
+                  </span>
+                </button>
+              </div>
+
+              <div class="sec-h"><b>Dossiers reçus</b><button type="button" data-go="3">Tout voir</button></div>
+              <div class="docs">
+                <button type="button" class="doc" data-go="3"><span><b>Pièce d'identité</b><small>Recto et verso, une seule fois.</small><em>À déposer</em></span><i><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="9" cy="11" r="2.2"/><path d="M5.8 16c.6-1.6 1.8-2.4 3.2-2.4s2.6.8 3.2 2.4M14.5 10h4M14.5 13.5h3"/></svg></i></button>
+                <button type="button" class="doc hot" data-go="3"><span><b>Justificatifs</b><small>Contrat, fiches de paie ou bourse.</small><em>Commence ici</em></span><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4L6 21z"/><path d="M9 8h6M9 11.5h6M9 15h3"/></svg></i></button>
+                <button type="button" class="doc" data-go="3"><span><b>Ton garant</b><small>Visale ou une personne.</small><em>À déposer</em></span><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/><path d="M8.8 12.2l2.2 2.2 4.3-4.3"/></svg></i></button>
+              </div>
+            </div>
+
+            <aside class="hm-side">
+              <div class="kpis"><span><b id="k-bud">–</b><small>Budget</small></span><span><b id="k-city">–</b><small>Ville</small></span><span><b id="k-type">–</b><small>Logement</small></span></div>
+              <div class="cal"><header><b id="cal-m"></b><span class="cal-k"><i></i>Visite <i class="r"></i>Ouverture</span></header><div class="cal-g" id="cal-g"></div></div>
+              <div class="sec-h"><b>Tes visites</b><button type="button" data-go="5">Tout voir</button></div>
+              <div class="vis-l" id="vis-l"></div>
+            </aside>
+          </div>
+        </section>
+
+        <!-- Ton profil -->
+        <section class="pg" id="c-pro" role="tabpanel" aria-labelledby="t-c-pro" hidden>
+          <div class="pg-g">
+            <div class="pg-m">
+              <header class="pg-h"><div><p class="pg-k">Ton profil</p><h2>Qui tu es</h2></div><span class="pill wait" id="pro-pill">À compléter</span></header>
+              <div class="hero">
+                <img class="hero-bg" src="hirondelle-aube.jpg" alt="">
+                <div class="hero-t"><small>Ton profil participant</small><strong id="pp-name">Léa</strong><p id="pp-line">Complète-le une fois, il accompagne chacune de tes participantures.</p>
+                  <div class="hero-a"><button class="btn" type="submit" form="pro">Enregistrer</button><button class="ghost" type="button" data-go="3">Préparer mon dossier</button><span class="saved" id="pro-ok" hidden>Enregistré</span></div></div>
+                <div class="hero-n"><small>Profil complet</small><b id="pp-pct">20 %</b></div>
+              </div>
+              <form class="pro" id="pro" autocomplete="on">
+                <label class="f"><span>Prénom</span><input id="pro-pn" name="prenom" maxlength="40" autocomplete="given-name"></label>
+                <label class="f"><span>E-mail</span><input id="pro-em" type="email" readonly></label>
+                <label class="f"><span>Téléphone</span><input name="tel" type="tel" inputmode="tel" maxlength="20" placeholder="06 12 34 56 78" autocomplete="tel"></label>
+                <label class="f"><span>Où tu vis aujourd'hui</span><input name="ville" maxlength="40" placeholder="Ta ville actuelle" autocomplete="address-level2"></label>
+                <fieldset class="f wide"><legend>Ta situation</legend><div class="opts" data-k="situation"></div></fieldset>
+                <fieldset class="f wide"><legend>Tes revenus par mois, nets</legend><div class="opts" data-k="revenus"></div></fieldset>
+              </form>
+              <form class="password-box" id="password-form" autocomplete="off">
+                <div><b>Sécurité du compte</b><small>Change ton mot de passe quand tu veux. Les sessions ouvertes seront fermées.</small></div>
+                <label><span>Mot de passe actuel</span><input name="current_mdp" type="password" minlength="1" maxlength="128" autocomplete="current-password" required></label>
+                <label><span>Nouveau mot de passe</span><input name="nouveau_mdp" type="password" minlength="8" maxlength="128" autocomplete="new-password" required></label>
+                <button class="ghost sm" type="submit">Changer le mot de passe</button>
+                <span class="saved" id="password-ok" hidden>Mot de passe modifié</span>
+                <p class="form-error" id="password-error" hidden></p>
+              </form>
+            </div>
+            <aside class="pg-s">
+              <div class="pg-sh"><b>Ce qui rassure</b></div>
+              <div class="tags" id="pp-tags"></div>
+              <div class="pg-sh"><b>Les propriétaires regardent</b></div>
+              <ul class="lst"><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 6.5A7 7 0 1 0 17 17.5"/><path d="M4 10.5h9M4 13.5h9"/></svg></i><span><b>Tes revenus</b><small>Environ trois fois le loyer</small></span></li><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/><path d="M8.8 12.2l2.2 2.2 4.3-4.3"/></svg></i><span><b>Ton garant</b><small>Visale ou une personne</small></span></li><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4M10 12h5M10 15.5h5"/></svg></i><span><b>Ta situation</b><small>Contrat, études ou alternance</small></span></li><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3L5 13.5h6l-1 7.5 8-10.5h-6z"/></svg></i><span><b>Ta réactivité</b><small>Tes agents répondent en quelques minutes</small></span></li></ul>
+              <div class="note-c"><i><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg></i><p>Ton profil n'est jamais envoyé sans ton accord.</p></div>
+            </aside>
+          </div>
+        </section>
+
+        <!-- Tes biens -->
+        <section class="pg" id="c-rech" role="tabpanel" aria-labelledby="t-c-rech" hidden>
+          <div class="pg-g">
+            <div class="pg-m">
+              <header class="pg-h"><div><p class="pg-k" id="rh-k">Tes biens</p><h2 id="rh-t">À écrire</h2></div><div class="pg-act"><button class="ghost sm" id="edit" type="button">Modifier</button><button class="btn sm" type="button" data-go="4">Voir mes agents</button></div></header>
+              <div class="pr" id="rh-pr">
+                <div class="pr-l">
+                  <div class="pr-you"><small>Tu as écrit</small><p class="quote" id="quote"></p>
+                    <p id="rech-empty" hidden>Écris-la dans le champ en haut du tableau de bord : quelques mots suffisent.</p></div>
+                  <div class="pr-ai"><small><i class="spark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l1.7 5 5 1.7-5 1.7-1.7 5-1.7-5-5-1.7 5-1.7z"/><path d="M18.5 15.5l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></svg></i>Tes biens, précisée par l'Agent</small>
+                    <p class="pr-txt" id="pr-txt"></p>
+                    <p class="pr-leg"><span class="lg-y">Tes mots</span><span class="lg-a">Ajouté par l'Agent, modifiable</span></p></div>
+                  <div class="pr-add"><small>Précise en un clic</small><div class="adds" id="pr-adds"></div></div>
+                </div>
+                <div class="pr-r"><div class="tiles" id="tiles"></div><div class="pr-n"><small>Annonces qui collent</small><b id="pr-cnt">–</b><span>sur 1 284 lues cette semaine</span></div></div>
+              </div>
+              <div class="pg-sh"><b>Activité de tes biens</b><small id="rh-source">Aperçu · annonces fictives</small></div>
+              <div class="tbl" id="rh-tbl"></div>
+            </div>
+            <aside class="pg-s">
+              <div class="pg-sh"><b>Tes recherches</b><small id="rs-n"></small></div>
+              <div class="rs" id="rs-l"></div>
+              <button type="button" class="rs-new" id="rs-new"><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></i><span><b>Nouvelle recherche</b><small>Une autre ville, un autre type : tes agents suivent les deux.</small></span></button>
+              <div class="pg-sh"><b>Tes critères</b></div>
+              <div class="tags" id="chips"></div>
+              <button type="button" class="pick" data-go="4"><img src="photos/annonce-5.jpg" alt=""><span><small>Coup de cœur des agents</small><b id="rh-pick">T2 lumineux</b></span></button>
+              <div class="seen" id="rh-seen" hidden></div><b id="rh-bud" hidden></b>
+            </aside>
+          </div>
+        </section>
+
+        <!-- Dossiers reçus -->
+        <section class="pg" id="c-dos" role="tabpanel" aria-labelledby="t-c-dos" hidden>
+          <div class="pg-g">
+            <div class="pg-m">
+              <header class="pg-h"><div><p class="pg-k">Dossiers reçus</p><h2>Tout ton dossier, au même endroit</h2></div><span class="pill wait" id="doc-count">0 sur 5 pièces</span></header>
+              <div class="fold" id="fold">
+                <div class="fold-back"><span class="fold-tab"><i></i>Dossier de <b id="fd-name">toi</b></span></div>
+                <div class="papers" id="papers"></div>
+                <div class="fold-front">
+                  <div class="ff-t"><small>Un dossier, toutes tes participantures</small><strong>Tu le ranges une fois.</strong><p>L'Agent vérifie chaque pièce, puis la joint à chacune de tes participantures.</p></div>
+                  <div class="ff-r"><div class="ff-bar"><i id="doc-progress" style="--p:0"></i></div><span id="doc-progress-label">0 sur 5 pièces reçues</span><button class="btn" id="start-dossier" type="button">Commencer mon dossier</button><small class="soon-t">Les pièces sont envoyées de façon sécurisée</small></div>
+                </div>
+              </div>
+              <div class="fd" id="fd" aria-live="polite"></div>
+            </div>
+            <aside class="pg-s">
+              <div class="pg-sh"><b>Ce que vérifie l'Agent</b></div>
+              <div class="tags"><span>Authenticité</span><span>Lisibilité</span><span>Dates valides</span><span>Cohérence des noms</span><span>Montants</span></div>
+              <div class="pg-sh"><b>Bon à savoir</b></div>
+              <ul class="lst"><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/><path d="M8.8 12.2l2.2 2.2 4.3-4.3"/></svg></i><span><b>Visale, c'est gratuit</b><small>Le garant de l'État pour les moins de 31 ans</small></span></li><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg></i><span><b>Tes pièces restent à toi</b><small>Rien ne part sans ton accord</small></span></li><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg></i><span><b>Filigrane automatique</b><small>Chaque envoi porte le nom de l'annonce</small></span></li></ul>
+              <div class="note-c"><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3L5 13.5h6l-1 7.5 8-10.5h-6z"/></svg></i><p>Un dossier complet est souvent celui qui passe en premier.</p></div>
+            </aside>
+          </div>
+        </section>
+
+        <!-- Tes agents -->
+        <section class="pg" id="c-ag" role="tabpanel" aria-labelledby="t-c-ag" hidden>
+          <div class="pg-g">
+            <div class="pg-m">
+              <header class="pg-h"><div><p class="pg-k">Tes agents</p><h2>Ils cherchent pour toi</h2></div><span class="pill wait" id="ag-pill">En attente de ta recherche</span></header>
+              <div class="hero hero-ag">
+                <img class="hero-bg" src="hirondelle-aube.jpg" alt="">
+                <div class="hero-t"><small>Trois agents, une mission</small><strong id="ag-b">Trois agents, une mission.</strong><p id="ag-p">Dès que tu as écrit ta recherche, ils savent quoi chercher.</p>
+                  <div class="hero-a"><button class="btn" type="button" data-go="2">Ma recherche</button><button class="ghost" type="button" data-go="3">Mon dossier</button></div></div>
+                <div class="ag-st big"><span><img src="hirondelle-icone.jpg" alt=""></span><span><img src="hirondelle-icone.jpg" alt=""></span><span><img src="hirondelle-icone.jpg" alt=""></span></div>
+              </div>
+              <div class="pg-sh"><b>Leur nuit, en exemple</b><small>Aperçu</small></div>
+              <div class="tbl tbl-log">
+                <div class="tr th"><span>Heure</span><span>Ce qu'ils ont fait</span><span>Résultat</span></div>
+                <div class="tr"><span>02:14</span><span><b>Lecture</b> de toutes les nouvelles annonces</span><span><em class="ok">214 lues</em></span></div>
+                <div class="tr"><span>03:40</span><span><b>Vérification</b> des photos et des loyers</span><span><em class="rust">3 arnaques écartées</em></span></div>
+                <div class="tr hot"><span>06:55</span><span><b>Tri</b> selon ta recherche</span><span><em>12 pour toi</em></span></div>
+                <div class="tr"><span>07:02</span><span><b>Alerte</b> : une annonce à 94 %</span><span><em class="ok">Envoyée</em></span></div>
+              </div>
+            </div>
+            <aside class="pg-s">
+              <div class="pg-sh"><b>L'équipe</b></div>
+              <ul class="lst crew"><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg></i><span><b>Le Lecteur</b><small>Lit toutes les annonces, jour et nuit</small></span><i class="st-d"></i></li><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/><path d="M8.8 12.2l2.2 2.2 4.3-4.3"/></svg></i><span><b>Le Vérificateur</b><small>Écarte les arnaques et les annonces douteuses</small></span><i class="st-d"></i></li><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3L5 13.5h6l-1 7.5 8-10.5h-6z"/></svg></i><span><b>Le Candidat</b><small>Postule pour toi, avec ton accord</small></span><i class="st-d"></i></li></ul>
+              <div class="pg-sh"><b>Ta règle</b></div>
+              <div class="note-c big"><i><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg></i><p><b>Rien ne part sans ton accord.</b> Tu valides chaque participanture d'un geste.</p></div>
+            </aside>
+          </div>
+        </section>
+
+        <!-- Tes visites -->
+        <section class="pg" id="c-vis" role="tabpanel" aria-labelledby="t-c-vis" hidden>
+          <div class="pg-g">
+            <div class="pg-m">
+              <header class="pg-h"><div><p class="pg-k">Tes visites</p><h2>Ton agenda</h2></div><span class="pill wait">Exemples</span></header>
+              <div class="hero">
+                <img class="hero-bg" src="photos/annonce-3.jpg" alt="">
+                <div class="hero-t"><small>Prochaine visite · exemple</small><strong>T2 lumineux</strong><p id="vv-when">Le propriétaire a répondu à ta participanture.</p>
+                  <div class="hero-a"><button class="btn" type="button" disabled>Ajouter à mon agenda</button><button class="ghost" type="button" disabled>Itinéraire</button></div></div>
+                <div class="hero-n"><small>Correspondance</small><b>94 %</b></div>
+              </div>
+              <div class="pg-sh"><b>À venir</b><small>Quand un propriétaire répond, la visite s'ajoute ici</small></div>
+              <div class="tbl tbl-vis" id="vv-tbl"></div>
+            </div>
+            <aside class="pg-s">
+              <div class="cal"><header><b id="cal-m2"></b></header><div class="cal-g" id="cal-g2"></div></div>
+              <div class="pg-sh"><b>Avant la visite</b></div>
+              <ul class="lst"><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4M10 12h5M10 15.5h5"/></svg></i><span><b>Dossiers reçus sur ton téléphone</b><small>Pour le montrer sur place</small></span></li><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg></i><span><b>Regarde l'état des lieux</b><small>Fenêtres, eau chaude, humidité</small></span></li><li><i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0 1 13 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></svg></i><span><b>Teste le trajet</b><small>À l'heure où tu iras en cours ou au travail</small></span></li></ul>
+            </aside>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+  <div class="winbar" id="winbar">
+    <button type="button" class="wb-x" id="cine" aria-pressed="false"><i><svg viewBox="0 0 24 24" aria-hidden="true"><path class="ic-x" d="M7 7l10 10M17 7L7 17"/><path class="ic-o" d="M4 6.5h16v11H4zM4 10h16"/></svg></i><span class="wb-l">Fermer pour le voir vivre</span><span class="wb-o">Rouvrir mon espace</span></button>
+  </div>
+</main>
+
+<footer class="foot"><a href="index.html">Accueil</a><a href="mentions-legales.html">Mentions légales</a><a href="confidentialite.html">Confidentialité</a><span>Démo · données fictives</span></footer>
