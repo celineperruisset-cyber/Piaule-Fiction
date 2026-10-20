@@ -1695,3 +1695,124 @@ def test_agent_scope_blocks_out_of_role_action_and_records_audit():
         assert events.status_code == 200
         assert events.json()[0]["evenement"] == "agent_action_bloquee"
         assert events.json()[0]["metadata"]["action_demandee"] == "publier_annonce"
+
+
+def test_selected_application_becomes_tenant_and_rejected_application_is_purged():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.AGENT_INTERNAL_TOKEN = "agent-test-token"
+        owner = TestClient(main.app)
+        assert owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "lifecycle-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        ).status_code == 200
+        property_id = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien lifecycle",
+                "type": "appartement",
+                "adresse_ligne1": "5 rue du Test",
+                "ville": "Lyon",
+            },
+        ).json()["id"]
+        application_id = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Retenu",
+                "candidat_email": "alex-retained@example.test",
+            },
+        ).json()["id"]
+
+        for document_type in ("identite", "domicile", "situation_professionnelle", "ressources", "imposition"):
+            uploaded = owner.post(
+                f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
+                data={"nom": document_type, "type": document_type},
+                files={"file": (f"{document_type}.pdf", b"%PDF-lifecycle", "application/pdf")},
+            )
+            assert uploaded.status_code == 201
+            assert owner.put(
+                f"/api/biens/{property_id}/candidatures/{application_id}/pieces/{uploaded.json()['id']}/verification",
+                json={"statut": "valide"},
+            ).status_code == 200
+        assert owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/verifier"
+        ).json()["statut"] == "complet"
+        access = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/lien-candidat"
+        )
+        access_token = access.json()["url"].split("?access=", 1)[1]
+
+        selected = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/statut",
+            json={"statut": "retenue", "motif": "Dossier sélectionné par le propriétaire."},
+        )
+        assert selected.status_code == 200
+        assert selected.json()["locataire_id"]
+        assert selected.json()["purge_prevue_le"] is None
+        tenant = owner.get("/api/locataires").json()
+        assert len(tenant) == 1
+        assert tenant[0]["candidature_id"] == application_id
+        assert tenant[0]["email"] == "alex-retained@example.test"
+        assert owner.get(f"/api/candidature-acces/{access_token}").status_code == 404
+
+        rejected_id = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Sam",
+                "candidat_nom": "Refuse",
+                "candidat_email": "sam-rejected@example.test",
+            },
+        ).json()["id"]
+        rejected_document = owner.post(
+            f"/api/biens/{property_id}/candidatures/{rejected_id}/pieces",
+            data={"nom": "Identité", "type": "identite"},
+            files={"file": ("identite-rejected.pdf", b"%PDF-rejected", "application/pdf")},
+        )
+        rejected_document_id = rejected_document.json()["id"]
+        with main._connect() as connection:
+            rejected_filename = connection.execute(
+                "SELECT stored_filename FROM application_documents WHERE id = ?",
+                (rejected_document_id,),
+            ).fetchone()["stored_filename"]
+        assert (main.UPLOAD_DIRECTORY / rejected_filename).exists()
+        rejected_link = owner.post(
+            f"/api/biens/{property_id}/candidatures/{rejected_id}/lien-candidat"
+        )
+        rejected_token = rejected_link.json()["url"].split("?access=", 1)[1]
+        refused = owner.post(
+            f"/api/biens/{property_id}/candidatures/{rejected_id}/statut",
+            json={"statut": "refusee", "motif": "Candidature non retenue."},
+        )
+        assert refused.status_code == 200
+        assert refused.json()["purge_prevue_le"]
+
+        with main._connect() as connection:
+            connection.execute(
+                "UPDATE owner_applications SET purge_after = ? WHERE id = ?",
+                ("2000-01-01T00:00:00Z", rejected_id),
+            )
+            connection.commit()
+        purged = owner.post(
+            "/api/internal/candidatures/purger",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+        )
+        assert purged.status_code == 200
+        assert rejected_id in purged.json()["candidatures_purgees"]
+        anonymized = owner.get(f"/api/biens/{property_id}/candidatures/{rejected_id}")
+        assert anonymized.status_code == 200
+        assert anonymized.json()["candidat_nom"] == "supprimé"
+        assert anonymized.json()["candidat_email"] == ""
+        assert anonymized.json()["anonymisee_le"]
+        assert owner.get(f"/api/candidature-acces/{rejected_token}").status_code == 404
+        assert owner.get(
+            f"/api/biens/{property_id}/candidatures/{rejected_id}/pieces"
+        ).json() == []
+        assert not (main.UPLOAD_DIRECTORY / rejected_filename).exists()

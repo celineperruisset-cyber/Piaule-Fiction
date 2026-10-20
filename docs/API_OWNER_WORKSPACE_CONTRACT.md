@@ -124,6 +124,10 @@ Une candidature est rattachée au workspace, au bien et éventuellement au lot. 
 
 Les transitions sont contrôlées par `POST /api/biens/{id}/candidatures/{application_id}/statut`, avec un `statut` cible et un `motif`. Une candidature ne peut pas être proposée en visite, confirmée ou retenue tant que son moteur de complétude ne la considère pas `complet`. L’historique lisible est disponible avec `GET /api/biens/{id}/candidatures/{application_id}/historique` et conserve l’ancien statut, le nouveau statut, la source et le motif. Les décisions de refus et de retenue restent des actions du propriétaire ; les recalculs de complétude et les retours DossierFacile sont enregistrés comme événements système.
 
+Lorsqu’une candidature complète passe à `retenue`, le backend crée une fiche durable dans `owner_tenants`, accessible avec `GET /api/locataires`, `GET /api/locataires/{tenant_id}` ou `GET /api/biens/{id}/locataires`. Cette fiche reprend uniquement les informations nécessaires au suivi du locataire et reste liée à la candidature source. Le lien temporaire candidat est alors révoqué : il n’y a pas de compte candidat permanent créé par ce parcours.
+
+Lorsqu’une candidature passe à `refusee` ou `retiree`, le backend programme une purge selon `PIAULE_APPLICATION_REJECTED_RETENTION_DAYS` (90 jours par défaut). Le worker interne `POST /api/internal/candidatures/purger`, protégé par `x-piaule-agent-token`, supprime les documents bruts, pièces jointes et messages, puis anonymise les coordonnées de la candidature en conservant uniquement la trace nécessaire du pipeline et de l’audit. Une candidature déjà convertie en locataire n’est pas purgée par ce worker.
+
 Toutes ces routes exigent une session propriétaire et filtrent par `workspace_id`. Un lot possède un identifiant unique dans son bien, ses caractéristiques principales, ses paramètres financiers et un statut de cycle de vie (`brouillon`, `disponible`, `occupe`, `archive`).
 
 ## Réception des candidatures depuis les annonces

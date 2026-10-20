@@ -73,6 +73,9 @@ CANDIDATE_PORTAL_BASE_URL = os.getenv(
     "http://127.0.0.1:5173/candidature.html",
 ).strip()
 CANDIDATE_LINK_SECONDS = 30 * 24 * 60 * 60
+APPLICATION_REJECTED_RETENTION_DAYS = max(
+    1, int(os.getenv("PIAULE_APPLICATION_REJECTED_RETENTION_DAYS", "90"))
+)
 
 STATE_DIRECTORY = Path(os.getenv("PIAULE_STATE_DIRECTORY", ".local-state"))
 DATABASE_PATH = Path(
@@ -614,7 +617,7 @@ APPLICATION_STATUS_TRANSITIONS = {
     "recue": {"a_completer", "en_verification", "prete", "refusee", "retiree"},
     "a_completer": {"recue", "en_verification", "prete", "refusee", "retiree"},
     "en_verification": {"recue", "a_completer", "prete", "refusee", "retiree"},
-    "prete": {"a_completer", "en_verification", "visite_proposee", "refusee", "retiree"},
+    "prete": {"a_completer", "en_verification", "visite_proposee", "retenue", "refusee", "retiree"},
     "visite_proposee": {"prete", "visite_confirmee", "refusee", "retiree"},
     "visite_confirmee": {"visite_proposee", "retenue", "refusee", "retiree"},
     "retenue": {"refusee", "retiree"},
@@ -670,7 +673,31 @@ class OwnerApplication(BaseModel):
     statut_source: str = "proprietaire"
     doublon_possible: bool = False
     notes_privees: str
+    locataire_id: str | None = None
+    purge_prevue_le: str | None = None
+    anonymisee_le: str | None = None
     recue_le: str
+    updated_at: str
+
+
+TenantStatus = Literal["actif", "archive"]
+
+
+class OwnerTenant(BaseModel):
+    id: str
+    workspace_id: str
+    bien_id: str
+    bien_nom: str
+    lot_id: str | None = None
+    lot_identifiant: str | None = None
+    candidature_id: str
+    prenom: str
+    nom: str
+    email: str
+    telephone: str
+    statut: TenantStatus
+    retenu_le: str
+    created_at: str
     updated_at: str
 
 
@@ -1413,6 +1440,27 @@ def _ensure_database() -> None:
             CREATE INDEX IF NOT EXISTS owner_applications_workspace_idx ON owner_applications(workspace_id);
             CREATE INDEX IF NOT EXISTS owner_applications_property_idx ON owner_applications(property_id);
             CREATE INDEX IF NOT EXISTS owner_applications_duplicate_idx ON owner_applications(duplicate_key);
+            CREATE TABLE IF NOT EXISTS owner_tenants (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                lot_id TEXT,
+                application_id TEXT NOT NULL UNIQUE,
+                prenom TEXT NOT NULL,
+                nom TEXT NOT NULL,
+                email TEXT NOT NULL DEFAULT '',
+                telephone TEXT NOT NULL DEFAULT '',
+                statut TEXT NOT NULL DEFAULT 'actif',
+                retenu_le TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                FOREIGN KEY(lot_id) REFERENCES lots(id) ON DELETE SET NULL,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS owner_tenants_workspace_idx ON owner_tenants(workspace_id, statut, created_at);
+            CREATE INDEX IF NOT EXISTS owner_tenants_property_idx ON owner_tenants(property_id, statut, created_at);
             CREATE TABLE IF NOT EXISTS application_status_history (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -1998,6 +2046,9 @@ def _ensure_database() -> None:
         for column, definition in (
             ("statut_motif", "TEXT NOT NULL DEFAULT ''"),
             ("statut_source", "TEXT NOT NULL DEFAULT 'proprietaire'"),
+            ("tenant_id", "TEXT"),
+            ("purge_after", "TEXT"),
+            ("anonymized_at", "TEXT"),
         ):
             _ensure_column(connection, "owner_applications", column, definition)
         for column, definition in (
@@ -2857,7 +2908,30 @@ def _application_from_row(row: sqlite3.Row) -> OwnerApplication:
         statut_source=row["statut_source"],
         doublon_possible=bool(row["doublon_possible"]),
         notes_privees=row["notes_privees"],
+        locataire_id=row["tenant_id"] if "tenant_id" in row.keys() else None,
+        purge_prevue_le=row["purge_after"] if "purge_after" in row.keys() else None,
+        anonymisee_le=row["anonymized_at"] if "anonymized_at" in row.keys() else None,
         recue_le=row["recue_le"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _tenant_from_row(row: sqlite3.Row) -> OwnerTenant:
+    return OwnerTenant(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        bien_id=row["property_id"],
+        bien_nom=row["bien_nom"],
+        lot_id=row["lot_id"],
+        lot_identifiant=row["lot_identifiant"],
+        candidature_id=row["application_id"],
+        prenom=row["prenom"],
+        nom=row["nom"],
+        email=row["email"],
+        telephone=row["telephone"],
+        statut=row["statut"],
+        retenu_le=row["retenu_le"],
+        created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
 
@@ -2990,6 +3064,218 @@ def _owned_application_row(
     return row
 
 
+def _tenant_query() -> str:
+    return """
+        SELECT t.*, p.nom AS bien_nom, l.identifiant AS lot_identifiant
+        FROM owner_tenants t
+        JOIN properties p ON p.id = t.property_id
+        LEFT JOIN lots l ON l.id = t.lot_id
+    """
+
+
+def _promote_application_to_tenant(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    application_id: str,
+    property_id: str,
+) -> sqlite3.Row:
+    """Create the durable tenant record once the owner selects a candidate."""
+
+    existing = connection.execute(
+        "SELECT id FROM owner_tenants WHERE workspace_id = ? AND application_id = ?",
+        (workspace_id, application_id),
+    ).fetchone()
+    if existing is not None:
+        return connection.execute(
+            _tenant_query() + " WHERE t.id = ? AND t.workspace_id = ?",
+            (existing["id"], workspace_id),
+        ).fetchone()
+
+    application = connection.execute(
+        """
+        SELECT id, property_id, lot_id, candidat_prenom, candidat_nom,
+               candidat_email, candidat_telephone
+        FROM owner_applications
+        WHERE id = ? AND workspace_id = ? AND property_id = ?
+        """,
+        (application_id, workspace_id, property_id),
+    ).fetchone()
+    if application is None:
+        raise HTTPException(status_code=404, detail="Candidature introuvable pour créer le locataire.")
+
+    now = _iso_now()
+    tenant_id = f"locataire-{uuid4().hex[:16]}"
+    connection.execute(
+        """
+        INSERT INTO owner_tenants(
+            id, workspace_id, property_id, lot_id, application_id,
+            prenom, nom, email, telephone, statut, retenu_le, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'actif', ?, ?, ?)
+        """,
+        (
+            tenant_id,
+            workspace_id,
+            property_id,
+            application["lot_id"],
+            application_id,
+            application["candidat_prenom"],
+            application["candidat_nom"],
+            application["candidat_email"],
+            application["candidat_telephone"],
+            now,
+            now,
+            now,
+        ),
+    )
+    connection.execute(
+        """
+        UPDATE owner_applications
+        SET tenant_id = ?, purge_after = NULL, anonymized_at = NULL, updated_at = ?
+        WHERE id = ? AND workspace_id = ?
+        """,
+        (tenant_id, now, application_id, workspace_id),
+    )
+    # The temporary candidate portal is no longer needed after the decision.
+    connection.execute(
+        "UPDATE candidate_access_links SET active = 0 WHERE application_id = ? AND workspace_id = ?",
+        (application_id, workspace_id),
+    )
+    _record_audit_event(
+        connection,
+        workspace_id=workspace_id,
+        actor_type="system",
+        actor_id="application-lifecycle",
+        event_name="candidature_convertie_en_locataire",
+        entity_type="locataire",
+        entity_id=tenant_id,
+        property_id=property_id,
+        application_id=application_id,
+        metadata={"donnees_source": "candidature", "portail_temporaire_revoque": True},
+    )
+    return connection.execute(
+        _tenant_query() + " WHERE t.id = ? AND t.workspace_id = ?",
+        (tenant_id, workspace_id),
+    ).fetchone()
+
+
+def _schedule_application_purge(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    application_id: str,
+    property_id: str,
+) -> None:
+    """Schedule rejected candidate data cleanup without touching the audit trail."""
+
+    if connection.execute(
+        "SELECT 1 FROM owner_tenants WHERE workspace_id = ? AND application_id = ?",
+        (workspace_id, application_id),
+    ).fetchone() is not None:
+        return
+    purge_after = datetime.now(timezone.utc).timestamp() + APPLICATION_REJECTED_RETENTION_DAYS * 86400
+    purge_at = datetime.fromtimestamp(purge_after, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    connection.execute(
+        """
+        UPDATE owner_applications
+        SET purge_after = ?, updated_at = ?
+        WHERE id = ? AND workspace_id = ?
+        """,
+        (purge_at, _iso_now(), application_id, workspace_id),
+    )
+    connection.execute(
+        "UPDATE candidate_access_links SET active = 0 WHERE application_id = ? AND workspace_id = ?",
+        (application_id, workspace_id),
+    )
+    _record_audit_event(
+        connection,
+        workspace_id=workspace_id,
+        actor_type="system",
+        actor_id="application-lifecycle",
+        event_name="purge_candidature_programmee",
+        entity_type="candidature",
+        entity_id=application_id,
+        property_id=property_id,
+        application_id=application_id,
+        metadata={"purge_prevue_le": purge_at, "delai_jours": APPLICATION_REJECTED_RETENTION_DAYS},
+    )
+
+
+def _purge_application_personal_data(connection: sqlite3.Connection, row: sqlite3.Row) -> None:
+    """Delete raw rejected-candidate data and keep only an anonymized pipeline trace."""
+
+    application_id = row["id"]
+    workspace_id = row["workspace_id"]
+    property_id = row["property_id"]
+    stored_files = [
+        item["stored_filename"]
+        for item in connection.execute(
+            "SELECT stored_filename FROM application_documents WHERE application_id = ? AND workspace_id = ?",
+            (application_id, workspace_id),
+        ).fetchall()
+    ]
+    inbound_files = [
+        item["stored_filename"]
+        for item in connection.execute(
+            """
+            SELECT ia.stored_filename
+            FROM inbound_application_attachments ia
+            JOIN inbound_application_messages im ON im.id = ia.inbound_message_id
+            WHERE im.application_id = ? AND im.workspace_id = ?
+            """,
+            (application_id, workspace_id),
+        ).fetchall()
+    ]
+
+    for filename in set(stored_files + inbound_files):
+        (UPLOAD_DIRECTORY / filename).unlink(missing_ok=True)
+
+    connection.execute(
+        "DELETE FROM inbound_application_messages WHERE application_id = ? AND workspace_id = ?",
+        (application_id, workspace_id),
+    )
+    connection.execute(
+        "DELETE FROM dossier_facile_connections WHERE application_id = ? AND workspace_id = ?",
+        (application_id, workspace_id),
+    )
+    connection.execute(
+        "DELETE FROM candidate_access_links WHERE application_id = ? AND workspace_id = ?",
+        (application_id, workspace_id),
+    )
+    connection.execute(
+        "DELETE FROM candidate_messages WHERE application_id = ? AND workspace_id = ?",
+        (application_id, workspace_id),
+    )
+    connection.execute(
+        "DELETE FROM application_documents WHERE application_id = ? AND workspace_id = ?",
+        (application_id, workspace_id),
+    )
+    now = _iso_now()
+    connection.execute(
+        """
+        UPDATE owner_applications
+        SET candidat_prenom = 'Candidat', candidat_nom = 'supprimé',
+            candidat_email = '', candidat_telephone = '', reference_source = '',
+            duplicate_key = '', doublon_possible = 0, notes_privees = '',
+            purge_after = NULL, anonymized_at = ?, updated_at = ?
+        WHERE id = ? AND workspace_id = ?
+        """,
+        (now, now, application_id, workspace_id),
+    )
+    _record_audit_event(
+        connection,
+        workspace_id=workspace_id,
+        actor_type="system",
+        actor_id="application-retention",
+        event_name="donnees_candidat_purgees",
+        entity_type="candidature",
+        entity_id=application_id,
+        property_id=property_id,
+        application_id=application_id,
+        metadata={"fichiers_supprimes": len(set(stored_files + inbound_files)), "anonymisee": True},
+    )
+
+
 def _record_application_status_event(
     connection: sqlite3.Connection,
     *,
@@ -3089,6 +3375,20 @@ def _set_application_status(
         source=source,
         reason=clean_reason,
     )
+    if new_status == "retenue":
+        _promote_application_to_tenant(
+            connection,
+            workspace_id=workspace_id,
+            application_id=application_id,
+            property_id=current["property_id"],
+        )
+    elif new_status in {"refusee", "retiree"}:
+        _schedule_application_purge(
+            connection,
+            workspace_id=workspace_id,
+            application_id=application_id,
+            property_id=current["property_id"],
+        )
     return connection.execute(
         "SELECT * FROM owner_applications WHERE id = ? AND workspace_id = ?",
         (application_id, workspace_id),
@@ -6855,6 +7155,79 @@ def list_all_applications(owner: Candidate = Depends(current_candidate)) -> list
             (owner.workspace_id,),
         ).fetchall()
     return [_application_from_row(row) for row in rows]
+
+
+@app.get("/api/locataires", response_model=list[OwnerTenant])
+def list_all_tenants(owner: Candidate = Depends(current_candidate)) -> list[OwnerTenant]:
+    """List durable tenant records for the current owner's workspace."""
+
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            _tenant_query()
+            + " WHERE t.workspace_id = ? ORDER BY t.created_at DESC, t.id",
+            (owner.workspace_id,),
+        ).fetchall()
+    return [_tenant_from_row(row) for row in rows]
+
+
+@app.get("/api/locataires/{tenant_id}", response_model=OwnerTenant)
+def get_tenant(tenant_id: str, owner: Candidate = Depends(current_candidate)) -> OwnerTenant:
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            _tenant_query() + " WHERE t.id = ? AND t.workspace_id = ?",
+            (tenant_id, owner.workspace_id),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Locataire introuvable dans ce workspace.")
+    return _tenant_from_row(row)
+
+
+@app.get("/api/biens/{property_id}/locataires", response_model=list[OwnerTenant])
+def list_property_tenants(
+    property_id: str, owner: Candidate = Depends(current_candidate)
+) -> list[OwnerTenant]:
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        rows = connection.execute(
+            _tenant_query()
+            + " WHERE t.workspace_id = ? AND t.property_id = ? ORDER BY t.created_at DESC, t.id",
+            (owner.workspace_id, property_id),
+        ).fetchall()
+    return [_tenant_from_row(row) for row in rows]
+
+
+@app.post("/api/internal/candidatures/purger")
+def purge_expired_application_data(request: Request, limit: int = 100) -> dict[str, object]:
+    """Purge expired rejected applications; intended for a scheduled worker."""
+
+    _agent_internal_auth(request)
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=422, detail="La limite doit être comprise entre 1 et 500.")
+    now = _iso_now()
+    purged_ids: list[str] = []
+    with closing(_connect()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            """
+            SELECT a.*
+            FROM owner_applications a
+            WHERE a.purge_after IS NOT NULL
+              AND a.purge_after <= ?
+              AND a.anonymized_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM owner_tenants t
+                  WHERE t.workspace_id = a.workspace_id AND t.application_id = a.id
+              )
+            ORDER BY a.purge_after, a.id
+            LIMIT ?
+            """,
+            (now, limit),
+        ).fetchall()
+        for row in rows:
+            _purge_application_personal_data(connection, row)
+            purged_ids.append(row["id"])
+        connection.commit()
+    return {"traite": len(purged_ids), "candidatures_purgees": purged_ids}
 
 
 @app.get("/api/biens/{property_id}/canaux-candidatures", response_model=list[ApplicationChannel])
