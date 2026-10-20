@@ -10,15 +10,22 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import imaplib
 import json
 import os
 import re
 import secrets
 import sqlite3
+import smtplib
 import time
 import base64
 from contextlib import closing
 from datetime import date
+from email import policy
+from email.header import decode_header, make_header
+from email.message import EmailMessage, Message
+from email.parser import BytesParser
+from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from typing import Literal
 from urllib.error import HTTPError, URLError
@@ -417,7 +424,7 @@ class CandidateMessage(BaseModel):
     sujet: str
     contenu: str
     source: Literal["email", "portail_candidat", "agent", "proprietaire"]
-    statut: Literal["recu", "a_envoyer", "envoye", "erreur"]
+    statut: Literal["recu", "a_envoyer", "en_cours", "envoye", "erreur"]
     created_at: str
 
 
@@ -431,6 +438,23 @@ class CandidateCompletenessFollowUp(BaseModel):
     human_approval_required: bool = False
     refus_decision_proprietaire: bool = True
     created_at: str
+
+
+class EmailOutboxProcessResult(BaseModel):
+    traite: int
+    envoyes: int
+    erreurs: int
+    configuration: str
+
+
+class EmailInboxSyncResult(BaseModel):
+    lus: int
+    importes: int
+    associes: int
+    pieces_stockees: int
+    ignores: int
+    erreurs: int
+    configuration: str
 
 
 class DossierFacileConnection(BaseModel):
@@ -861,6 +885,22 @@ def _ensure_database() -> None:
                 FOREIGN KEY(message_id) REFERENCES candidate_messages(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS candidate_followups_application_idx ON candidate_completeness_followups(application_id, created_at);
+            CREATE TABLE IF NOT EXISTS inbound_application_attachments (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                inbound_message_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                stored_filename TEXT NOT NULL,
+                application_document_id TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(inbound_message_id) REFERENCES inbound_application_messages(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_document_id) REFERENCES application_documents(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS inbound_attachments_message_idx ON inbound_application_attachments(inbound_message_id);
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
                 email TEXT NOT NULL,
@@ -983,6 +1023,12 @@ def _ensure_database() -> None:
             ("tantiemes_generaux", "REAL"),
         ):
             _ensure_column(connection, "lots", column, definition)
+        for column, definition in (
+            ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("sent_at", "TEXT"),
+            ("last_error", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            _ensure_column(connection, "candidate_messages", column, definition)
 
         # Give legacy accounts a workspace before any workspace-scoped route is used.
         legacy_accounts = connection.execute(
@@ -1940,6 +1986,121 @@ def _document_extension(filename: str, content_type: str) -> str | None:
     return extension
 
 
+def _email_enabled() -> bool:
+    return os.getenv("PIAULE_EMAIL_ENABLED", "false").strip().lower() == "true"
+
+
+def _email_internal_token(request: Request) -> None:
+    expected_token = os.getenv("PIAULE_EMAIL_INTERNAL_TOKEN", "").strip()
+    received_token = request.headers.get("x-piaule-email-token", "")
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="Le worker e-mail n'est pas configuré.")
+    if not hmac.compare_digest(received_token, expected_token):
+        raise HTTPException(status_code=401, detail="Jeton du worker e-mail invalide.")
+
+
+def _smtp_settings() -> dict[str, object] | None:
+    if not _email_enabled():
+        return None
+    host = os.getenv("PIAULE_SMTP_HOST", "").strip()
+    username = os.getenv("PIAULE_SMTP_USERNAME", "").strip()
+    password = os.getenv("PIAULE_SMTP_PASSWORD", "")
+    sender = _normalise_email(os.getenv("PIAULE_SMTP_FROM", "") or username)
+    if not host or not username or not password or not EMAIL_RE.fullmatch(sender):
+        return None
+    try:
+        port = int(os.getenv("PIAULE_SMTP_PORT", "587"))
+    except ValueError:
+        return None
+    use_ssl = os.getenv("PIAULE_SMTP_USE_SSL", "false").strip().lower() == "true"
+    return {
+        "host": host,
+        "port": port,
+        "username": username,
+        "password": password,
+        "sender": sender,
+        "use_ssl": use_ssl,
+    }
+
+
+def _imap_settings() -> dict[str, object] | None:
+    if not _email_enabled():
+        return None
+    host = os.getenv("PIAULE_IMAP_HOST", "imap.hostinger.com").strip()
+    username = os.getenv("PIAULE_IMAP_USERNAME", "").strip()
+    password = os.getenv("PIAULE_IMAP_PASSWORD", "")
+    if not host or not username or not password:
+        return None
+    try:
+        port = int(os.getenv("PIAULE_IMAP_PORT", "993"))
+    except ValueError:
+        return None
+    return {
+        "host": host,
+        "port": port,
+        "username": username,
+        "password": password,
+        "folder": os.getenv("PIAULE_IMAP_FOLDER", "INBOX").strip() or "INBOX",
+    }
+
+
+def _send_smtp_message(recipient: str, subject: str, body: str) -> None:
+    settings = _smtp_settings()
+    if settings is None:
+        raise RuntimeError("La configuration SMTP est incomplète ou désactivée.")
+    message = EmailMessage()
+    message["From"] = str(settings["sender"])
+    message["To"] = recipient
+    message["Subject"] = subject or "Piaule Fiction"
+    message.set_content(body)
+    if bool(settings["use_ssl"]):
+        with smtplib.SMTP_SSL(str(settings["host"]), int(settings["port"]), timeout=20) as client:
+            client.login(str(settings["username"]), str(settings["password"]))
+            client.send_message(message)
+        return
+    with smtplib.SMTP(str(settings["host"]), int(settings["port"]), timeout=20) as client:
+        client.ehlo()
+        client.starttls()
+        client.ehlo()
+        client.login(str(settings["username"]), str(settings["password"]))
+        client.send_message(message)
+
+
+def _decode_email_header(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        return str(make_header(decode_header(value)))
+    except (TypeError, ValueError):
+        return value
+
+
+def _html_to_text(value: str) -> str:
+    without_tags = re.sub(r"<[^>]+>", " ", value or "")
+    return re.sub(r"\s+", " ", without_tags).strip()
+
+
+def _extract_email_parts(message: Message) -> tuple[str, list[tuple[str, str, bytes]]]:
+    text_parts: list[str] = []
+    attachments: list[tuple[str, str, bytes]] = []
+    for part in message.walk():
+        if part.is_multipart():
+            continue
+        payload = part.get_payload(decode=True) or b""
+        filename = _decode_email_header(part.get_filename())
+        disposition = part.get_content_disposition()
+        content_type = part.get_content_type().lower()
+        if filename or disposition == "attachment":
+            attachments.append((filename or "piece-jointe", content_type, payload))
+        elif content_type == "text/plain":
+            charset = part.get_content_charset() or "utf-8"
+            text_parts.append(payload.decode(charset, errors="replace"))
+        elif content_type == "text/html" and not text_parts:
+            charset = part.get_content_charset() or "utf-8"
+            text_parts.append(_html_to_text(payload.decode(charset, errors="replace")))
+    return "\n\n".join(text_parts).strip(), attachments
+
+
 def _profile_from_row(row: sqlite3.Row | None, candidate: Candidate) -> CandidateProfile:
     if row is None:
         return CandidateProfile(prenom=candidate.prenom)
@@ -2830,11 +2991,231 @@ def list_inbound_application_messages(
     return [_inbound_message_from_row(row) for row in rows]
 
 
+def _store_inbound_attachment(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    inbound_message_id: str,
+    filename: str,
+    content_type: str,
+    content: bytes,
+) -> bool:
+    extension = _document_extension(filename, content_type)
+    if extension is None or len(content) > MAX_DOCUMENT_BYTES:
+        return False
+    attachment_id = f"inbound-attachment-{uuid4().hex}"
+    stored_filename = f"{attachment_id}.{extension}"
+    safe_filename = _clean_text(filename or f"piece.{extension}", 180)
+    digest = hashlib.sha256(content).hexdigest()
+    UPLOAD_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    path = UPLOAD_DIRECTORY / stored_filename
+    path.write_bytes(content)
+    try:
+        connection.execute(
+            """
+            INSERT INTO inbound_application_attachments(
+                id, workspace_id, inbound_message_id, filename, content_type,
+                size_bytes, sha256, stored_filename, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                attachment_id,
+                workspace_id,
+                inbound_message_id,
+                safe_filename,
+                content_type,
+                len(content),
+                digest,
+                stored_filename,
+            ),
+        )
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    return True
+
+
+def _promote_inbound_attachments(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    inbound_message_id: str,
+    application_id: str,
+    property_id: str,
+) -> int:
+    rows = connection.execute(
+        """
+        SELECT * FROM inbound_application_attachments
+        WHERE workspace_id = ? AND inbound_message_id = ?
+          AND application_document_id IS NULL
+        ORDER BY created_at, id
+        """,
+        (workspace_id, inbound_message_id),
+    ).fetchall()
+    promoted = 0
+    for row in rows:
+        document_id = f"application-doc-{uuid4().hex}"
+        connection.execute(
+            """
+            INSERT INTO application_documents(
+                id, workspace_id, application_id, property_id, document_type,
+                nom, original_filename, stored_filename, content_type, size_bytes,
+                sha256, provenance, statut, date_expiration, note_verification,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'autre', ?, ?, ?, ?, ?, ?, 'email', 'recu', NULL, '', datetime('now'), datetime('now'))
+            """,
+            (
+                document_id,
+                workspace_id,
+                application_id,
+                property_id,
+                row["filename"],
+                row["filename"],
+                row["stored_filename"],
+                row["content_type"],
+                row["size_bytes"],
+                row["sha256"],
+            ),
+        )
+        connection.execute(
+            "UPDATE inbound_application_attachments SET application_document_id = ? WHERE id = ?",
+            (document_id, row["id"]),
+        )
+        promoted += 1
+    if promoted:
+        _refresh_application_status(connection, workspace_id, application_id)
+    return promoted
+
+
+def _ingest_inbound_application(
+    connection: sqlite3.Connection,
+    *,
+    reception_address: str,
+    message_id: str,
+    sender: str,
+    subject: str,
+    body: str,
+    attachment_names: list[str],
+    attachment_payloads: list[tuple[str, str, bytes]] | None = None,
+    received_at: str | None = None,
+) -> tuple[sqlite3.Row, bool, int]:
+    reception_address = _normalise_email(reception_address)
+    sender = _normalise_email(sender) if sender else ""
+    if sender and not EMAIL_RE.fullmatch(sender):
+        sender = ""
+    cleaned_message_id = _clean_text(message_id, 300)
+    attachments = _clean_string_list(attachment_names, maximum_items=50, maximum_length=240)
+    with_payload_names = [item[0] for item in (attachment_payloads or [])]
+    attachments = _clean_string_list(attachments + with_payload_names, maximum_items=50, maximum_length=240)
+    channel = connection.execute(
+        """
+        SELECT * FROM application_channels
+        WHERE lower(adresse_reception) = ? AND actif = 1
+        """,
+        (reception_address,),
+    ).fetchone()
+    if channel is None:
+        raise HTTPException(status_code=404, detail="Adresse de réception inconnue ou désactivée.")
+    matching_applications = connection.execute(
+        """
+        SELECT id FROM owner_applications
+        WHERE workspace_id = ? AND property_id = ?
+          AND lower(candidat_email) = ?
+          AND (? IS NULL OR lot_id = ?)
+        ORDER BY updated_at DESC
+        """,
+        (
+            channel["workspace_id"],
+            channel["property_id"],
+            sender,
+            channel["lot_id"],
+            channel["lot_id"],
+        ),
+    ).fetchall() if sender else []
+    matched_application_id = matching_applications[0]["id"] if len(matching_applications) == 1 else None
+    existing = connection.execute(
+        """
+        SELECT * FROM inbound_application_messages
+        WHERE workspace_id = ? AND message_id = ?
+        """,
+        (channel["workspace_id"], cleaned_message_id),
+    ).fetchone()
+    if existing is not None:
+        return existing, bool(existing["application_id"]), 0
+
+    inbound_id = f"message-{uuid4().hex[:16]}"
+    connection.execute(
+        """
+        INSERT INTO inbound_application_messages(
+            id, workspace_id, channel_id, property_id, lot_id, adresse_reception,
+            message_id, expediteur_email, objet, contenu_texte, pieces_jointes_json,
+            statut, application_id, recu_le, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
+        """,
+        (
+            inbound_id,
+            channel["workspace_id"],
+            channel["id"],
+            channel["property_id"],
+            channel["lot_id"],
+            channel["adresse_reception"],
+            cleaned_message_id,
+            sender,
+            _clean_text(subject, 500),
+            _clean_text(body, 100_000),
+            json.dumps(attachments, ensure_ascii=False),
+            "associee" if matched_application_id else "recue",
+            matched_application_id,
+            _clean_text(received_at, 80) if received_at else None,
+        ),
+    )
+    stored_count = 0
+    for filename, content_type, content in attachment_payloads or []:
+        if _store_inbound_attachment(
+            connection,
+            workspace_id=channel["workspace_id"],
+            inbound_message_id=inbound_id,
+            filename=filename,
+            content_type=content_type,
+            content=content,
+        ):
+            stored_count += 1
+    if matched_application_id:
+        connection.execute(
+            """
+            INSERT INTO candidate_messages(
+                id, workspace_id, application_id, property_id, direction,
+                sujet, contenu, source, statut, created_at
+            ) VALUES (?, ?, ?, ?, 'entrant', ?, ?, 'email', 'recu', datetime('now'))
+            """,
+            (
+                f"message-candidat-{uuid4().hex[:16]}",
+                channel["workspace_id"],
+                matched_application_id,
+                channel["property_id"],
+                _clean_text(subject, 160),
+                _clean_text(body, 5_000),
+            ),
+        )
+        _promote_inbound_attachments(
+            connection,
+            workspace_id=channel["workspace_id"],
+            inbound_message_id=inbound_id,
+            application_id=matched_application_id,
+            property_id=channel["property_id"],
+        )
+    row = connection.execute(
+        "SELECT * FROM inbound_application_messages WHERE id = ?",
+        (inbound_id,),
+    ).fetchone()
+    return row, bool(matched_application_id), stored_count
+
+
 @app.post("/api/internal/candidatures/inbound", response_model=InboundApplicationMessage)
 def ingest_inbound_application_email(
     payload: InboundApplicationEmail, request: Request
 ) -> InboundApplicationMessage:
-    """Receive a normalized email from the future mailbox provider/webhook."""
+    """Receive a normalized email from an authorized mailbox provider."""
 
     expected_token = os.getenv("PIAULE_INBOUND_WEBHOOK_TOKEN", "").strip()
     received_token = request.headers.get("x-piaule-inbound-token", "")
@@ -2843,96 +3224,18 @@ def ingest_inbound_application_email(
     if not hmac.compare_digest(received_token, expected_token):
         raise HTTPException(status_code=401, detail="Jeton de réception invalide.")
 
-    reception_address = _normalise_email(payload.adresse_reception)
-    sender = _normalise_email(payload.expediteur_email) if payload.expediteur_email else ""
-    if sender and not EMAIL_RE.fullmatch(sender):
-        sender = ""
-    attachments = _clean_string_list(payload.pieces_jointes, maximum_items=50, maximum_length=240)
     with closing(_connect()) as connection:
-        channel = connection.execute(
-            """
-            SELECT * FROM application_channels
-            WHERE lower(adresse_reception) = ? AND actif = 1
-            """,
-            (reception_address,),
-        ).fetchone()
-        if channel is None:
-            raise HTTPException(status_code=404, detail="Adresse de réception inconnue ou désactivée.")
-        matching_applications = connection.execute(
-            """
-            SELECT id FROM owner_applications
-            WHERE workspace_id = ? AND property_id = ?
-              AND lower(candidat_email) = ?
-              AND (? IS NULL OR lot_id = ?)
-            ORDER BY updated_at DESC
-            """,
-            (
-                channel["workspace_id"],
-                channel["property_id"],
-                sender,
-                channel["lot_id"],
-                channel["lot_id"],
-            ),
-        ).fetchall() if sender else []
-        matched_application_id = matching_applications[0]["id"] if len(matching_applications) == 1 else None
-        existing = connection.execute(
-            """
-            SELECT * FROM inbound_application_messages
-            WHERE workspace_id = ? AND message_id = ?
-            """,
-            (channel["workspace_id"], payload.message_id),
-        ).fetchone()
-        if existing is not None:
-            return _inbound_message_from_row(existing)
-
-        message_id = f"message-{uuid4().hex[:16]}"
-        connection.execute(
-            """
-            INSERT INTO inbound_application_messages(
-                id, workspace_id, channel_id, property_id, lot_id, adresse_reception,
-                message_id, expediteur_email, objet, contenu_texte, pieces_jointes_json,
-                statut, application_id, recu_le, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
-            """,
-            (
-                message_id,
-                channel["workspace_id"],
-                channel["id"],
-                channel["property_id"],
-                channel["lot_id"],
-                channel["adresse_reception"],
-                payload.message_id,
-                sender,
-                _clean_text(payload.objet, 500),
-                _clean_text(payload.contenu_texte, 100_000),
-                json.dumps(attachments, ensure_ascii=False),
-                "associee" if matched_application_id else "recue",
-                matched_application_id,
-                _clean_text(payload.recu_le, 80) if payload.recu_le else None,
-            ),
+        row, _, _ = _ingest_inbound_application(
+            connection,
+            reception_address=payload.adresse_reception,
+            message_id=payload.message_id,
+            sender=payload.expediteur_email,
+            subject=payload.objet,
+            body=payload.contenu_texte,
+            attachment_names=payload.pieces_jointes,
+            received_at=payload.recu_le,
         )
-        if matched_application_id:
-            connection.execute(
-                """
-                INSERT INTO candidate_messages(
-                    id, workspace_id, application_id, property_id, direction,
-                    sujet, contenu, source, statut, created_at
-                ) VALUES (?, ?, ?, ?, 'entrant', ?, ?, 'email', 'recu', datetime('now'))
-                """,
-                (
-                    f"message-candidat-{uuid4().hex[:16]}",
-                    channel["workspace_id"],
-                    matched_application_id,
-                    channel["property_id"],
-                    _clean_text(payload.objet, 160),
-                    _clean_text(payload.contenu_texte, 5_000),
-                ),
-            )
         connection.commit()
-        row = connection.execute(
-            "SELECT * FROM inbound_application_messages WHERE id = ?",
-            (message_id,),
-        ).fetchone()
     return _inbound_message_from_row(row)
 
 
@@ -2965,12 +3268,209 @@ def associate_inbound_application(
             "UPDATE inbound_application_messages SET application_id = ?, statut = 'associee' WHERE id = ? AND workspace_id = ?",
             (payload.candidature_id, message_id, owner.workspace_id),
         )
+        _promote_inbound_attachments(
+            connection,
+            workspace_id=owner.workspace_id,
+            inbound_message_id=message_id,
+            application_id=payload.candidature_id,
+            property_id=message["property_id"],
+        )
         connection.commit()
         row = connection.execute(
             "SELECT * FROM inbound_application_messages WHERE id = ? AND workspace_id = ?",
             (message_id, owner.workspace_id),
         ).fetchone()
     return _inbound_message_from_row(row)
+
+
+@app.post(
+    "/api/internal/candidatures/outbox/traiter",
+    response_model=EmailOutboxProcessResult,
+)
+def process_candidate_email_outbox(request: Request) -> EmailOutboxProcessResult:
+    """Send queued candidate messages through the configured SMTP account."""
+
+    _email_internal_token(request)
+    if _smtp_settings() is None:
+        raise HTTPException(status_code=503, detail="La configuration SMTP est incomplète ou désactivée.")
+    try:
+        limit = max(1, min(int(os.getenv("PIAULE_EMAIL_BATCH_SIZE", "20")), 100))
+    except ValueError:
+        limit = 20
+
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            """
+            SELECT m.*, a.candidat_email
+            FROM candidate_messages m
+            JOIN owner_applications a ON a.id = m.application_id
+            WHERE m.direction = 'sortant' AND m.statut = 'a_envoyer'
+              AND a.candidat_email <> ''
+            ORDER BY m.created_at, m.id
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        for row in rows:
+            connection.execute(
+                """
+                UPDATE candidate_messages
+                SET statut = 'en_cours', attempts = attempts + 1, last_error = ''
+                WHERE id = ? AND statut = 'a_envoyer'
+                """,
+                (row["id"],),
+            )
+        connection.commit()
+
+    sent = errors = 0
+    for row in rows:
+        try:
+            recipient = _normalise_email(row["candidat_email"])
+            if not EMAIL_RE.fullmatch(recipient):
+                raise RuntimeError("Adresse e-mail candidat invalide.")
+            _send_smtp_message(recipient, row["sujet"], row["contenu"])
+        except Exception as exc:
+            errors += 1
+            with closing(_connect()) as connection:
+                connection.execute(
+                    """
+                    UPDATE candidate_messages
+                    SET statut = 'erreur', last_error = ?
+                    WHERE id = ? AND statut = 'en_cours'
+                    """,
+                    (_clean_text(str(exc), 500), row["id"]),
+                )
+                connection.commit()
+        else:
+            sent += 1
+            with closing(_connect()) as connection:
+                connection.execute(
+                    """
+                    UPDATE candidate_messages
+                    SET statut = 'envoye', sent_at = datetime('now'), last_error = ''
+                    WHERE id = ? AND statut = 'en_cours'
+                    """,
+                    (row["id"],),
+                )
+                connection.commit()
+    return EmailOutboxProcessResult(
+        traite=len(rows),
+        envoyes=sent,
+        erreurs=errors,
+        configuration="smtp",
+    )
+
+
+def _known_reception_address(connection: sqlite3.Connection, recipients: list[str]) -> str | None:
+    for recipient in recipients:
+        normalized = _normalise_email(recipient)
+        row = connection.execute(
+            """
+            SELECT adresse_reception FROM application_channels
+            WHERE lower(adresse_reception) = ? AND actif = 1
+            """,
+            (normalized,),
+        ).fetchone()
+        if row is not None:
+            return row["adresse_reception"]
+    return None
+
+
+@app.post(
+    "/api/internal/candidatures/inbox/synchroniser",
+    response_model=EmailInboxSyncResult,
+)
+def synchronize_candidate_email_inbox(request: Request) -> EmailInboxSyncResult:
+    """Read unread Hostinger messages and import known application addresses."""
+
+    _email_internal_token(request)
+    settings = _imap_settings()
+    if settings is None:
+        raise HTTPException(status_code=503, detail="La configuration IMAP est incomplète ou désactivée.")
+    try:
+        limit = max(1, min(int(os.getenv("PIAULE_EMAIL_BATCH_SIZE", "20")), 100))
+    except ValueError:
+        limit = 20
+
+    mailbox = imaplib.IMAP4_SSL(str(settings["host"]), int(settings["port"]))
+    lus = imported = associated = stored = ignored = errors = 0
+    try:
+        status_code, _ = mailbox.login(str(settings["username"]), str(settings["password"]))
+        if status_code != "OK":
+            raise RuntimeError("La connexion IMAP Hostinger a été refusée.")
+        status_code, _ = mailbox.select(str(settings["folder"]))
+        if status_code != "OK":
+            raise RuntimeError("La boîte IMAP demandée est inaccessible.")
+        status_code, search_data = mailbox.uid("search", None, "UNSEEN")
+        if status_code != "OK":
+            raise RuntimeError("La recherche des messages non lus a échoué.")
+        message_uids = (search_data[0] or b"").split()[:limit]
+        for uid in message_uids:
+            lus += 1
+            try:
+                status_code, fetched = mailbox.uid("fetch", uid, "(RFC822)")
+                if status_code != "OK":
+                    raise RuntimeError("La lecture du message IMAP a échoué.")
+                raw_message = next(
+                    item[1] for item in fetched if isinstance(item, tuple) and isinstance(item[1], bytes)
+                )
+                message = BytesParser(policy=policy.default).parsebytes(raw_message)
+                recipients = [
+                    address
+                    for _, address in getaddresses(
+                        message.get_all("to", [])
+                        + message.get_all("delivered-to", [])
+                        + message.get_all("x-original-to", [])
+                    )
+                    if address
+                ]
+                with closing(_connect()) as connection:
+                    reception_address = _known_reception_address(connection, recipients)
+                if reception_address is None:
+                    ignored += 1
+                    continue
+                body, attachments = _extract_email_parts(message)
+                message_id = f"imap:{settings['folder']}:{uid.decode(errors='replace')}"
+                external_message_id = _decode_email_header(message.get("Message-ID"))
+                if external_message_id:
+                    message_id = f"{message_id}:{external_message_id}"
+                with closing(_connect()) as connection:
+                    row, was_associated, stored_count = _ingest_inbound_application(
+                        connection,
+                        reception_address=reception_address,
+                        message_id=message_id,
+                        sender=parseaddr(message.get("From", ""))[1],
+                        subject=_decode_email_header(message.get("Subject")),
+                        body=body,
+                        attachment_names=[filename for filename, _, _ in attachments],
+                        attachment_payloads=attachments,
+                        received_at=_decode_email_header(message.get("Date")),
+                    )
+                    connection.commit()
+                imported += 1
+                associated += int(was_associated)
+                stored += stored_count
+                mailbox.uid("store", uid, "+FLAGS", "(\\Seen)")
+            except Exception:
+                errors += 1
+    finally:
+        try:
+            mailbox.close()
+        except Exception:
+            pass
+        try:
+            mailbox.logout()
+        except Exception:
+            pass
+    return EmailInboxSyncResult(
+        lus=lus,
+        importes=imported,
+        associes=associated,
+        pieces_stockees=stored,
+        ignores=ignored,
+        erreurs=errors,
+        configuration="imap",
+    )
 
 
 @app.post(

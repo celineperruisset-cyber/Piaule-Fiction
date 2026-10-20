@@ -27,6 +27,8 @@ Routes de socle actuellement conservées : `GET /health`, compte/session, profil
 
 La connexion Google utilise OpenID Connect avec les scopes `openid email profile`. Elle ne demande aucun accès Gmail. Les routes sont `GET /api/auth/google/start` et `GET /api/auth/google/callback`. Il faut créer un client OAuth Web dans Google Cloud et déclarer exactement la valeur de `PIAULE_GOOGLE_REDIRECT_URI`.
 
+La messagerie Hostinger se configure dans l’environnement du VPS, jamais dans Git : SMTP `smtp.hostinger.com` (SSL 465 ou STARTTLS 587) et IMAP `imap.hostinger.com` (SSL 993). Le worker sortant est `POST /api/internal/candidatures/outbox/traiter`, et le worker entrant est `POST /api/internal/candidatures/inbox/synchroniser`. Les deux exigent `x-piaule-email-token` et `PIAULE_EMAIL_INTERNAL_TOKEN`.
+
 La récupération de compte utilise `POST /api/mot-de-passe-oublie` puis `POST /api/mot-de-passe-reinitialiser`. Le prénom peut servir de vérification complémentaire, mais le secret de récupération doit être transmis par e-mail et reste valable quinze minutes. L’envoi SMTP réel sera branché avant la production ; `PIAULE_EXPOSE_DEV_RESET_TOKEN` est réservé aux tests locaux.
 
 Une récupération par SMS est prévue après ce socle. Elle devra utiliser un numéro vérifié, un fournisseur SMS, un code à usage unique expirant rapidement, des limites anti-abus et un audit. Elle ne remplace pas encore le parcours e-mail actuel.

@@ -64,7 +64,7 @@ Le fournisseur de messagerie entrant transmet ensuite un message normalisé à `
 
 Après extraction des informations, contrôle des pièces et détection des incohérences par le futur agent, l’API permet de rattacher le message à une candidature avec `PUT /api/candidatures/inbox/{message_id}/associer`. Le rattachement reste limité au même workspace et au même bien, afin d’éviter qu’un e-mail reçu pour une annonce soit attaché au mauvais dossier.
 
-Cette brique prépare le contrat d’intégration ; elle ne configure pas encore la réception réelle du domaine, le fournisseur de boîte e-mail, l’analyse des pièces jointes ni les relances automatiques. Ces éléments seront branchés séparément, après choix du fournisseur entrant.
+Pour une boîte Hostinger, le worker peut lire les messages non lus avec `POST /api/internal/candidatures/inbox/synchroniser`. Il reconnaît les adresses de canaux connues, importe le texte, ignore les messages destinés à une autre adresse et stocke les pièces jointes PDF/JPG/PNG acceptées jusqu’à 100 Mo avant de les rattacher au dossier lorsqu’une correspondance unique est trouvée. La route est protégée par `x-piaule-email-token` et `PIAULE_EMAIL_INTERNAL_TOKEN`.
 
 ## Vérification DossierFacile Connect
 
@@ -104,7 +104,7 @@ Le portail candidat expose uniquement :
 - `POST /api/candidature-acces/{token}/pieces` pour déposer une pièce ;
 - `POST /api/candidature-acces/{token}/messages` pour répondre à une demande.
 
-Les messages du candidat sont stockés dans `candidate_messages` et restent rattachés au bon workspace, bien et dossier. Le propriétaire peut consulter la conversation et préparer une réponse via `GET/POST /api/biens/{id}/candidatures/{application_id}/messages`. Une réponse sortante est d’abord marquée `a_envoyer` ; le fournisseur SMTP sera responsable de l’envoi et du passage à `envoye`.
+Les messages du candidat sont stockés dans `candidate_messages` et restent rattachés au bon workspace, bien et dossier. Le propriétaire peut consulter la conversation et préparer une réponse via `GET/POST /api/biens/{id}/candidatures/{application_id}/messages`. Une réponse sortante est d’abord marquée `a_envoyer`. Le worker SMTP traite la file avec `POST /api/internal/candidatures/outbox/traiter`, enregistre `envoye` ou `erreur`, le nombre d’essais et la dernière erreur.
 
 L’agent peut préparer une demande ciblée avec `POST /api/biens/{id}/candidatures/{application_id}/agent/relancer-completude`. Cette action ne demande que les catégories manquantes, expirées, refusées ou à corriger, crée un message sortant `source=agent` dans la file d’envoi et génère un nouveau lien de dépôt valable trente jours. Elle est idempotente pour un même ensemble de pièces afin d’éviter les relances en double. L’envoi de cette demande ne nécessite pas de validation du propriétaire une fois le fournisseur d’e-mails configuré. L’agent ne peut pas passer la candidature à `refusee` : cette décision reste une action explicite du propriétaire.
 

@@ -500,3 +500,72 @@ def test_dossier_facile_connect_requires_partner_configuration_and_keeps_summary
         "documents_total": 1,
         "documents_statuts": ["VALIDATED"],
     }
+
+
+def test_candidate_email_outbox_sends_queued_messages(monkeypatch):
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        owner = TestClient(main.app)
+        assert owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Celine",
+                "email": "email-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        ).status_code == 200
+
+        property_id = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien e-mail",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue du Test",
+                "ville": "Lyon",
+            },
+        ).json()["id"]
+        application_id = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Demo",
+                "candidat_email": "alex@example.test",
+            },
+        ).json()["id"]
+        queued = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/messages",
+            json={"sujet": "Dossier", "contenu": "Merci de compléter votre dossier."},
+        )
+        assert queued.status_code == 201
+
+        sent: list[tuple[str, str, str]] = []
+
+        def fake_send(recipient: str, subject: str, body: str) -> None:
+            sent.append((recipient, subject, body))
+
+        monkeypatch.setattr(main, "_send_smtp_message", fake_send)
+        monkeypatch.setenv("PIAULE_EMAIL_ENABLED", "true")
+        monkeypatch.setenv("PIAULE_SMTP_HOST", "smtp.hostinger.com")
+        monkeypatch.setenv("PIAULE_SMTP_USERNAME", "robot@piaulefiction.fr")
+        monkeypatch.setenv("PIAULE_SMTP_PASSWORD", "synthetic-password")
+        monkeypatch.setenv("PIAULE_SMTP_FROM", "robot@piaulefiction.fr")
+        monkeypatch.setenv("PIAULE_EMAIL_INTERNAL_TOKEN", "email-worker-token")
+
+        processed = owner.post(
+            "/api/internal/candidatures/outbox/traiter",
+            headers={"x-piaule-email-token": "email-worker-token"},
+        )
+        assert processed.status_code == 200
+        assert processed.json() == {
+            "traite": 1,
+            "envoyes": 1,
+            "erreurs": 0,
+            "configuration": "smtp",
+        }
+        assert sent[0][0] == "alex@example.test"
+        assert owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}/messages"
+        ).json()[0]["statut"] == "envoye"
