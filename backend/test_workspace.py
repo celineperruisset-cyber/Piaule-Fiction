@@ -341,6 +341,30 @@ def test_owner_applications_are_attached_to_property_and_duplicates_are_flagged(
         assert completeness.json()["score"] == 100
         assert owner.get(f"/api/biens/{property_id}/candidatures/{application_id}").json()["statut"] == "prete"
 
+        access_link = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/lien-candidat"
+        )
+        assert access_link.status_code == 200
+        access_token = access_link.json()["url"].split("?access=", 1)[1]
+        portal = owner.get(f"/api/candidature-acces/{access_token}")
+        assert portal.status_code == 200
+        assert portal.json()["candidat_prenom"] == "Alex"
+        assert portal.json()["completude"]["score"] == 100
+
+        candidate_message = owner.post(
+            f"/api/candidature-acces/{access_token}/messages",
+            json={"sujet": "Question", "contenu": "Je reste disponible pour une visite."},
+        )
+        assert candidate_message.status_code == 201
+        assert candidate_message.json()["direction"] == "entrant"
+        owner_message = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/messages",
+            json={"sujet": "Suite du dossier", "contenu": "Merci pour votre retour."},
+        )
+        assert owner_message.status_code == 201
+        assert owner_message.json()["statut"] == "a_envoyer"
+        assert len(owner.get(f"/api/biens/{property_id}/candidatures/{application_id}/messages").json()) == 2
+
         duplicate = owner.post(
             f"/api/biens/{property_id}/candidatures",
             json={

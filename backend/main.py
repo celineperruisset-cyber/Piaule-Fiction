@@ -58,6 +58,11 @@ DOSSIER_FACILE_PROFILE_URL = os.getenv("PIAULE_DOSSIER_FACILE_PROFILE_URL", "").
 DOSSIER_FACILE_REDIRECT_URI = os.getenv("PIAULE_DOSSIER_FACILE_REDIRECT_URI", "").strip()
 DOSSIER_FACILE_WEBHOOK_TOKEN = os.getenv("PIAULE_DOSSIER_FACILE_WEBHOOK_TOKEN", "").strip()
 DOSSIER_FACILE_STATE_SECONDS = 600
+CANDIDATE_PORTAL_BASE_URL = os.getenv(
+    "PIAULE_CANDIDATE_PORTAL_BASE_URL",
+    "http://127.0.0.1:5173/candidature.html",
+).strip()
+CANDIDATE_LINK_SECONDS = 7 * 24 * 60 * 60
 
 STATE_DIRECTORY = Path(os.getenv("PIAULE_STATE_DIRECTORY", ".local-state"))
 DATABASE_PATH = Path(
@@ -378,6 +383,43 @@ class ApplicationCompleteness(BaseModel):
     pieces_requises: list[CompletenessItem]
     dossier_facile_statut: str = ""
     mis_a_jour_le: str
+
+
+class CandidateAccessLink(BaseModel):
+    id: str
+    candidature_id: str
+    url: str
+    expire_le: int
+    actif: bool = True
+
+
+class CandidatePortalView(BaseModel):
+    candidature_id: str
+    candidat_prenom: str
+    bien_nom: str
+    statut_candidature: ApplicationStatus
+    completude: ApplicationCompleteness
+
+
+class CandidateMessageCreate(BaseModel):
+    contenu: str = Field(min_length=1, max_length=5000)
+    sujet: str = Field(default="", max_length=160)
+
+
+class OwnerCandidateMessageCreate(BaseModel):
+    contenu: str = Field(min_length=1, max_length=5000)
+    sujet: str = Field(default="", max_length=160)
+
+
+class CandidateMessage(BaseModel):
+    id: str
+    candidature_id: str
+    direction: Literal["entrant", "sortant"]
+    sujet: str
+    contenu: str
+    source: Literal["email", "portail_candidat", "agent", "proprietaire"]
+    statut: Literal["recu", "a_envoyer", "envoye", "erreur"]
+    created_at: str
 
 
 class DossierFacileConnection(BaseModel):
@@ -761,6 +803,37 @@ def _ensure_database() -> None:
             CREATE INDEX IF NOT EXISTS application_documents_application_idx ON application_documents(application_id);
             CREATE INDEX IF NOT EXISTS application_documents_type_idx ON application_documents(application_id, document_type);
             CREATE INDEX IF NOT EXISTS application_documents_hash_idx ON application_documents(workspace_id, sha256);
+            CREATE TABLE IF NOT EXISTS candidate_access_links (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                expires_at REAL NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS candidate_access_application_idx ON candidate_access_links(application_id);
+            CREATE INDEX IF NOT EXISTS candidate_access_expiry_idx ON candidate_access_links(expires_at);
+            CREATE TABLE IF NOT EXISTS candidate_messages (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                sujet TEXT NOT NULL DEFAULT '',
+                contenu TEXT NOT NULL,
+                source TEXT NOT NULL,
+                statut TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS candidate_messages_application_idx ON candidate_messages(application_id, created_at);
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
                 email TEXT NOT NULL,
@@ -1465,6 +1538,45 @@ def _application_document_from_row(row: sqlite3.Row) -> ApplicationDocument:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _candidate_message_from_row(row: sqlite3.Row) -> CandidateMessage:
+    return CandidateMessage(
+        id=row["id"],
+        candidature_id=row["application_id"],
+        direction=row["direction"],
+        sujet=row["sujet"],
+        contenu=row["contenu"],
+        source=row["source"],
+        statut=row["statut"],
+        created_at=row["created_at"],
+    )
+
+
+def _candidate_access_url(token: str) -> str:
+    if not CANDIDATE_PORTAL_BASE_URL:
+        raise HTTPException(status_code=503, detail="Le portail candidat n'est pas configuré.")
+    separator = "&" if "?" in CANDIDATE_PORTAL_BASE_URL else "?"
+    return f"{CANDIDATE_PORTAL_BASE_URL}{separator}{urlencode({'access': token})}"
+
+
+def _active_candidate_access_row(token: str) -> sqlite3.Row:
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            """
+            SELECT l.*, a.candidat_prenom, a.candidat_email, a.statut AS candidature_statut,
+                   p.nom AS bien_nom
+            FROM candidate_access_links l
+            JOIN owner_applications a ON a.id = l.application_id
+            JOIN properties p ON p.id = l.property_id
+            WHERE l.token_hash = ? AND l.active = 1 AND l.expires_at > ?
+            """,
+            (token_hash, time.time()),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Ce lien candidat est invalide ou expiré.")
+    return row
 
 
 def _owned_application_document_row(
@@ -2657,6 +2769,23 @@ def ingest_inbound_application_email(
         ).fetchone()
         if channel is None:
             raise HTTPException(status_code=404, detail="Adresse de réception inconnue ou désactivée.")
+        matching_applications = connection.execute(
+            """
+            SELECT id FROM owner_applications
+            WHERE workspace_id = ? AND property_id = ?
+              AND lower(candidat_email) = ?
+              AND (? IS NULL OR lot_id = ?)
+            ORDER BY updated_at DESC
+            """,
+            (
+                channel["workspace_id"],
+                channel["property_id"],
+                sender,
+                channel["lot_id"],
+                channel["lot_id"],
+            ),
+        ).fetchall() if sender else []
+        matched_application_id = matching_applications[0]["id"] if len(matching_applications) == 1 else None
         existing = connection.execute(
             """
             SELECT * FROM inbound_application_messages
@@ -2673,8 +2802,8 @@ def ingest_inbound_application_email(
             INSERT INTO inbound_application_messages(
                 id, workspace_id, channel_id, property_id, lot_id, adresse_reception,
                 message_id, expediteur_email, objet, contenu_texte, pieces_jointes_json,
-                statut, recu_le, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'recue', COALESCE(?, datetime('now')), datetime('now'))
+                statut, application_id, recu_le, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
             """,
             (
                 message_id,
@@ -2688,9 +2817,28 @@ def ingest_inbound_application_email(
                 _clean_text(payload.objet, 500),
                 _clean_text(payload.contenu_texte, 100_000),
                 json.dumps(attachments, ensure_ascii=False),
+                "associee" if matched_application_id else "recue",
+                matched_application_id,
                 _clean_text(payload.recu_le, 80) if payload.recu_le else None,
             ),
         )
+        if matched_application_id:
+            connection.execute(
+                """
+                INSERT INTO candidate_messages(
+                    id, workspace_id, application_id, property_id, direction,
+                    sujet, contenu, source, statut, created_at
+                ) VALUES (?, ?, ?, ?, 'entrant', ?, ?, 'email', 'recu', datetime('now'))
+                """,
+                (
+                    f"message-candidat-{uuid4().hex[:16]}",
+                    channel["workspace_id"],
+                    matched_application_id,
+                    channel["property_id"],
+                    _clean_text(payload.objet, 160),
+                    _clean_text(payload.contenu_texte, 5_000),
+                ),
+            )
         connection.commit()
         row = connection.execute(
             "SELECT * FROM inbound_application_messages WHERE id = ?",
@@ -2971,6 +3119,171 @@ def dossier_facile_webhook(
     return {"ok": True, "connection_id": row["id"], "statut": connection_status}
 
 
+@app.post(
+    "/api/biens/{property_id}/candidatures/{application_id}/lien-candidat",
+    response_model=CandidateAccessLink,
+)
+def create_candidate_access_link(
+    property_id: str,
+    application_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> CandidateAccessLink:
+    """Create a revocable, expiring magic link for the candidate portal."""
+
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires_at = time.time() + CANDIDATE_LINK_SECONDS
+    link_id = f"candidate-link-{uuid4().hex[:16]}"
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        connection.execute(
+            "UPDATE candidate_access_links SET active = 0 WHERE application_id = ? AND workspace_id = ? AND active = 1",
+            (application_id, owner.workspace_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO candidate_access_links(
+                id, workspace_id, application_id, property_id, token_hash,
+                expires_at, active, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'))
+            """,
+            (link_id, owner.workspace_id, application_id, property_id, token_hash, expires_at),
+        )
+        connection.commit()
+    return CandidateAccessLink(
+        id=link_id,
+        candidature_id=application_id,
+        url=_candidate_access_url(token),
+        expire_le=int(expires_at),
+        actif=True,
+    )
+
+
+@app.get("/api/candidature-acces/{token}", response_model=CandidatePortalView)
+def candidate_portal_view(token: str) -> CandidatePortalView:
+    """Return only the information needed by a candidate's temporary portal."""
+
+    access = _active_candidate_access_row(token)
+    with closing(_connect()) as connection:
+        completeness = _application_completeness(
+            connection, access["workspace_id"], access["application_id"]
+        )
+    return CandidatePortalView(
+        candidature_id=access["application_id"],
+        candidat_prenom=access["candidat_prenom"],
+        bien_nom=access["bien_nom"],
+        statut_candidature=access["candidature_statut"],
+        completude=completeness,
+    )
+
+
+@app.post("/api/candidature-acces/{token}/messages", response_model=CandidateMessage, status_code=201)
+def candidate_portal_message(
+    token: str,
+    payload: CandidateMessageCreate,
+) -> CandidateMessage:
+    """Receive a candidate reply through the expiring portal link."""
+
+    access = _active_candidate_access_row(token)
+    message_id = f"message-candidat-{uuid4().hex[:16]}"
+    with closing(_connect()) as connection:
+        connection.execute(
+            """
+            INSERT INTO candidate_messages(
+                id, workspace_id, application_id, property_id, direction,
+                sujet, contenu, source, statut, created_at
+            ) VALUES (?, ?, ?, ?, 'entrant', ?, ?, 'portail_candidat', 'recu', datetime('now'))
+            """,
+            (
+                message_id,
+                access["workspace_id"],
+                access["application_id"],
+                access["property_id"],
+                _clean_text(payload.sujet, 160),
+                _clean_text(payload.contenu, 5_000),
+            ),
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM candidate_messages WHERE id = ?", (message_id,)).fetchone()
+    return _candidate_message_from_row(row)
+
+
+@app.post(
+    "/api/candidature-acces/{token}/pieces",
+    response_model=ApplicationDocument,
+    status_code=201,
+)
+async def candidate_portal_upload_document(
+    token: str,
+    nom: str = Form(...),
+    type: str = Form(...),
+    date_expiration: str = Form(""),
+    file: UploadFile = File(...),
+) -> ApplicationDocument:
+    """Accept a document from a candidate with a valid temporary link."""
+
+    access = _active_candidate_access_row(token)
+    document_type = _clean_text(type, 60)
+    if document_type not in set(ApplicationDocumentType.__args__):
+        raise HTTPException(status_code=422, detail="Type de pièce non pris en charge.")
+    document_name = _clean_text(nom, 120)
+    if len(document_name) < 2:
+        raise HTTPException(status_code=400, detail="Nomme la pièce avant de la déposer.")
+    expiration = _clean_text(date_expiration, 20) or None
+    if expiration:
+        try:
+            date.fromisoformat(expiration)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="La date d'expiration doit être au format AAAA-MM-JJ.") from exc
+    extension = _document_extension(file.filename or "", file.content_type or "")
+    if extension is None:
+        raise HTTPException(status_code=415, detail="Format accepté : PDF, JPG, PNG ou HEIC.")
+    content = await file.read(MAX_DOCUMENT_BYTES + 1)
+    if len(content) > MAX_DOCUMENT_BYTES:
+        raise HTTPException(status_code=413, detail="La pièce ne doit pas dépasser 10 Mo.")
+    document_id = f"application-doc-{uuid4().hex}"
+    stored_filename = f"{document_id}.{extension}"
+    original_filename = _clean_text(file.filename or f"piece.{extension}", 180)
+    digest = hashlib.sha256(content).hexdigest()
+    UPLOAD_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    (UPLOAD_DIRECTORY / stored_filename).write_bytes(content)
+    try:
+        with closing(_connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO application_documents(
+                    id, workspace_id, application_id, property_id, document_type,
+                    nom, original_filename, stored_filename, content_type, size_bytes,
+                    sha256, provenance, statut, date_expiration, note_verification,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'portail_candidat', 'recu', ?, '', datetime('now'), datetime('now'))
+                """,
+                (
+                    document_id,
+                    access["workspace_id"],
+                    access["application_id"],
+                    access["property_id"],
+                    document_type,
+                    document_name,
+                    original_filename,
+                    stored_filename,
+                    file.content_type or "application/octet-stream",
+                    len(content),
+                    digest,
+                    expiration,
+                ),
+            )
+            _refresh_application_status(connection, access["workspace_id"], access["application_id"])
+            connection.commit()
+            row = connection.execute("SELECT * FROM application_documents WHERE id = ?", (document_id,)).fetchone()
+    except Exception:
+        (UPLOAD_DIRECTORY / stored_filename).unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+    return _application_document_from_row(row)
+
+
 def _application_for_owner(
     connection: sqlite3.Connection, owner: Candidate, property_id: str, application_id: str
 ) -> sqlite3.Row:
@@ -2985,6 +3298,65 @@ def _application_for_owner(
     if row is None:
         raise HTTPException(status_code=404, detail="Candidature introuvable dans ce bien.")
     return row
+
+
+@app.get(
+    "/api/biens/{property_id}/candidatures/{application_id}/messages",
+    response_model=list[CandidateMessage],
+)
+def list_candidate_messages(
+    property_id: str,
+    application_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> list[CandidateMessage]:
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        rows = connection.execute(
+            """
+            SELECT * FROM candidate_messages
+            WHERE workspace_id = ? AND property_id = ? AND application_id = ?
+            ORDER BY created_at, id
+            """,
+            (owner.workspace_id, property_id, application_id),
+        ).fetchall()
+    return [_candidate_message_from_row(row) for row in rows]
+
+
+@app.post(
+    "/api/biens/{property_id}/candidatures/{application_id}/messages",
+    response_model=CandidateMessage,
+    status_code=201,
+)
+def create_owner_candidate_message(
+    property_id: str,
+    application_id: str,
+    payload: OwnerCandidateMessageCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> CandidateMessage:
+    """Queue a message for the real email provider to send to the candidate."""
+
+    message_id = f"message-candidat-{uuid4().hex[:16]}"
+    with closing(_connect()) as connection:
+        application = _application_for_owner(connection, owner, property_id, application_id)
+        connection.execute(
+            """
+            INSERT INTO candidate_messages(
+                id, workspace_id, application_id, property_id, direction,
+                sujet, contenu, source, statut, created_at
+            ) VALUES (?, ?, ?, ?, 'sortant', ?, ?, 'proprietaire', 'a_envoyer', datetime('now'))
+            """,
+            (
+                message_id,
+                owner.workspace_id,
+                application_id,
+                property_id,
+                _clean_text(payload.sujet, 160),
+                _clean_text(payload.contenu, 5_000),
+            ),
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM candidate_messages WHERE id = ?", (message_id,)).fetchone()
+    return _candidate_message_from_row(row)
 
 
 @app.get(

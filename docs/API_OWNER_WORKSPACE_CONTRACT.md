@@ -94,6 +94,20 @@ Le moteur est déterministe : une pièce manquante produit `manquante`, une piè
 
 Le dépôt exposé dans cette première tranche est protégé par la session propriétaire. Le lien candidat sécurisé et le dépôt autonome depuis l’espace candidat seront ajoutés sur cette même table, afin de ne pas créer un second modèle documentaire.
 
+## Échange avec le candidat
+
+Le propriétaire peut créer un lien temporaire avec `POST /api/biens/{id}/candidatures/{application_id}/lien-candidat`. La réponse contient une URL à insérer dans l’e-mail envoyé au candidat. Le jeton brut n’est jamais stocké en base : seul son hash est conservé, avec une expiration de sept jours et une révocation des anciens liens lors de la création d’un nouveau lien.
+
+Le portail candidat expose uniquement :
+
+- `GET /api/candidature-acces/{token}` pour voir le bien et l’état de complétude ;
+- `POST /api/candidature-acces/{token}/pieces` pour déposer une pièce ;
+- `POST /api/candidature-acces/{token}/messages` pour répondre à une demande.
+
+Les messages du candidat sont stockés dans `candidate_messages` et restent rattachés au bon workspace, bien et dossier. Le propriétaire peut consulter la conversation et préparer une réponse via `GET/POST /api/biens/{id}/candidatures/{application_id}/messages`. Une réponse sortante est d’abord marquée `a_envoyer` ; le fournisseur SMTP sera responsable de l’envoi et du passage à `envoye`.
+
+Lorsqu’un e-mail entrant arrive sur une adresse d’annonce, le backend tente une association déterministe avec une candidature du même bien et de la même adresse e-mail. Une correspondance unique crée aussi un message entrant dans la conversation. Une correspondance ambiguë reste dans l’inbox pour traitement par l’agent.
+
 La fiche comprend maintenant les types de location, équipements, disponibilité, photos, visibilité de l’adresse, informations DPE, mode de détention et premiers champs de copropriété. Les routes `POST/GET/PUT /api/biens/{id}/suivis` permettent de suivre diagnostics, assurances, contrats fournisseurs et documents de copropriété avec leurs échéances. `GET /api/echeances` remonte les éléments expirés ou arrivant à échéance.
 
 La comptabilité, la fiscalité, le financement, la rentabilité et les tableaux financiers ne font pas partie du produit. Les champs de loyer, charges et dépôt servent uniquement à configurer une mise en location et ses règles opérationnelles.
