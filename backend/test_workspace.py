@@ -300,6 +300,54 @@ def test_owner_applications_are_attached_to_property_and_duplicates_are_flagged(
         assert created.json()["statut"] == "recue"
         assert created.json()["doublon_possible"] is False
 
+        followup = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/agent/relancer-completude"
+        )
+        assert followup.status_code == 201
+        assert followup.json()["statut"] == "a_envoyer"
+        assert set(followup.json()["pieces_demandees"]) == {
+            "identite",
+            "domicile",
+            "situation_professionnelle",
+            "ressources",
+            "imposition",
+        }
+        assert followup.json()["human_approval_required"] is False
+        assert followup.json()["refus_decision_proprietaire"] is True
+        assert followup.json()["lien_depot"]
+        agent_message = owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}/messages"
+        ).json()[0]
+        assert agent_message["source"] == "agent"
+        assert agent_message["statut"] == "a_envoyer"
+
+        duplicate_followup = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/agent/relancer-completude"
+        )
+        assert duplicate_followup.status_code == 201
+        assert duplicate_followup.json()["statut"] == "deja_preparee"
+        assert duplicate_followup.json()["id"] == followup.json()["id"]
+
+        unsupported = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
+            data={"nom": "Photo HEIC", "type": "identite"},
+            files={"file": ("identite.heic", b"fake-heic", "image/heic")},
+        )
+        assert unsupported.status_code == 415
+
+        oversized = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
+            data={"nom": "Document trop lourd", "type": "identite"},
+            files={
+                "file": (
+                    "trop-lourd.pdf",
+                    b"x" * (main.MAX_DOCUMENT_BYTES + 1),
+                    "application/pdf",
+                )
+            },
+        )
+        assert oversized.status_code == 413
+
         identity = owner.post(
             f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
             data={"nom": "Pièce d'identité", "type": "identite", "provenance": "portail_candidat"},
@@ -363,7 +411,7 @@ def test_owner_applications_are_attached_to_property_and_duplicates_are_flagged(
         )
         assert owner_message.status_code == 201
         assert owner_message.json()["statut"] == "a_envoyer"
-        assert len(owner.get(f"/api/biens/{property_id}/candidatures/{application_id}/messages").json()) == 2
+        assert len(owner.get(f"/api/biens/{property_id}/candidatures/{application_id}/messages").json()) == 3
 
         duplicate = owner.post(
             f"/api/biens/{property_id}/candidatures",

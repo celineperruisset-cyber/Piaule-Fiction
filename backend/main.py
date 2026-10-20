@@ -75,7 +75,6 @@ ALLOWED_DOCUMENT_TYPES = {
     "jpg": {"image/jpeg"},
     "jpeg": {"image/jpeg"},
     "png": {"image/png"},
-    "heic": {"image/heic", "image/heif"},
 }
 
 
@@ -419,6 +418,18 @@ class CandidateMessage(BaseModel):
     contenu: str
     source: Literal["email", "portail_candidat", "agent", "proprietaire"]
     statut: Literal["recu", "a_envoyer", "envoye", "erreur"]
+    created_at: str
+
+
+class CandidateCompletenessFollowUp(BaseModel):
+    id: str
+    candidature_id: str
+    pieces_demandees: list[ApplicationDocumentType]
+    message_id: str | None = None
+    lien_depot: str | None = None
+    statut: Literal["a_envoyer", "deja_preparee", "aucune_piece_manquante", "sans_email"]
+    human_approval_required: bool = False
+    refus_decision_proprietaire: bool = True
     created_at: str
 
 
@@ -834,6 +845,22 @@ def _ensure_database() -> None:
                 FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS candidate_messages_application_idx ON candidate_messages(application_id, created_at);
+            CREATE TABLE IF NOT EXISTS candidate_completeness_followups (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                missing_signature TEXT NOT NULL,
+                missing_types_json TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(workspace_id, application_id, missing_signature),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                FOREIGN KEY(message_id) REFERENCES candidate_messages(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS candidate_followups_application_idx ON candidate_completeness_followups(application_id, created_at);
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
                 email TEXT NOT NULL,
@@ -1553,11 +1580,54 @@ def _candidate_message_from_row(row: sqlite3.Row) -> CandidateMessage:
     )
 
 
+def _candidate_followup_from_row(
+    row: sqlite3.Row, *, status: str | None = None, link: str | None = None
+) -> CandidateCompletenessFollowUp:
+    return CandidateCompletenessFollowUp(
+        id=row["id"],
+        candidature_id=row["application_id"],
+        pieces_demandees=json.loads(row["missing_types_json"] or "[]"),
+        message_id=row["message_id"] or None,
+        lien_depot=link,
+        statut=status or "deja_preparee",
+        created_at=row["created_at"],
+    )
+
+
 def _candidate_access_url(token: str) -> str:
     if not CANDIDATE_PORTAL_BASE_URL:
         raise HTTPException(status_code=503, detail="Le portail candidat n'est pas configuré.")
     separator = "&" if "?" in CANDIDATE_PORTAL_BASE_URL else "?"
     return f"{CANDIDATE_PORTAL_BASE_URL}{separator}{urlencode({'access': token})}"
+
+
+def _issue_candidate_access_link(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    application_id: str,
+    property_id: str,
+) -> tuple[str, str, int]:
+    """Issue one revocable candidate link and return id, raw token and expiry."""
+
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires_at = time.time() + CANDIDATE_LINK_SECONDS
+    link_id = f"candidate-link-{uuid4().hex[:16]}"
+    connection.execute(
+        "UPDATE candidate_access_links SET active = 0 WHERE application_id = ? AND workspace_id = ? AND active = 1",
+        (application_id, workspace_id),
+    )
+    connection.execute(
+        """
+        INSERT INTO candidate_access_links(
+            id, workspace_id, application_id, property_id, token_hash,
+            expires_at, active, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'))
+        """,
+        (link_id, workspace_id, application_id, property_id, token_hash, expires_at),
+    )
+    return link_id, token, int(expires_at)
 
 
 def _active_candidate_access_row(token: str) -> sqlite3.Row:
@@ -1605,6 +1675,25 @@ REQUIRED_APPLICATION_DOCUMENT_TYPES: tuple[ApplicationDocumentType, ...] = (
     "ressources",
     "imposition",
 )
+
+DOCUMENT_TYPE_LABELS: dict[ApplicationDocumentType, str] = {
+    "identite": "pièce d'identité",
+    "domicile": "justificatif de domicile",
+    "situation_professionnelle": "justificatif de situation professionnelle",
+    "ressources": "justificatif de ressources",
+    "imposition": "avis d'imposition",
+    "garant": "pièce du garant",
+    "autre": "document complémentaire",
+}
+
+
+def _completeness_followup_types(
+    completeness: ApplicationCompleteness,
+) -> list[ApplicationDocumentType]:
+    """Return only categories the agent may safely request from a candidate."""
+
+    requestable = {"manquante", "a_corriger", "expire", "refuse"}
+    return [item.type for item in completeness.pieces_requises if item.statut in requestable]
 
 
 def _application_completeness(
@@ -3130,24 +3219,13 @@ def create_candidate_access_link(
 ) -> CandidateAccessLink:
     """Create a revocable, expiring magic link for the candidate portal."""
 
-    token = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    expires_at = time.time() + CANDIDATE_LINK_SECONDS
-    link_id = f"candidate-link-{uuid4().hex[:16]}"
     with closing(_connect()) as connection:
         _application_for_owner(connection, owner, property_id, application_id)
-        connection.execute(
-            "UPDATE candidate_access_links SET active = 0 WHERE application_id = ? AND workspace_id = ? AND active = 1",
-            (application_id, owner.workspace_id),
-        )
-        connection.execute(
-            """
-            INSERT INTO candidate_access_links(
-                id, workspace_id, application_id, property_id, token_hash,
-                expires_at, active, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'))
-            """,
-            (link_id, owner.workspace_id, application_id, property_id, token_hash, expires_at),
+        link_id, token, expires_at = _issue_candidate_access_link(
+            connection,
+            workspace_id=owner.workspace_id,
+            application_id=application_id,
+            property_id=property_id,
         )
         connection.commit()
     return CandidateAccessLink(
@@ -3237,7 +3315,7 @@ async def candidate_portal_upload_document(
             raise HTTPException(status_code=422, detail="La date d'expiration doit être au format AAAA-MM-JJ.") from exc
     extension = _document_extension(file.filename or "", file.content_type or "")
     if extension is None:
-        raise HTTPException(status_code=415, detail="Format accepté : PDF, JPG, PNG ou HEIC.")
+        raise HTTPException(status_code=415, detail="Format accepté : PDF, JPG ou PNG.")
     content = await file.read(MAX_DOCUMENT_BYTES + 1)
     if len(content) > MAX_DOCUMENT_BYTES:
         raise HTTPException(status_code=413, detail="La pièce ne doit pas dépasser 10 Mo.")
@@ -3415,7 +3493,7 @@ async def upload_application_document(
             raise HTTPException(status_code=422, detail="La date d'expiration doit être au format AAAA-MM-JJ.") from exc
     extension = _document_extension(file.filename or "", file.content_type or "")
     if extension is None:
-        raise HTTPException(status_code=415, detail="Format accepté : PDF, JPG, PNG ou HEIC.")
+        raise HTTPException(status_code=415, detail="Format accepté : PDF, JPG ou PNG.")
     content = await file.read(MAX_DOCUMENT_BYTES + 1)
     if len(content) > MAX_DOCUMENT_BYTES:
         raise HTTPException(status_code=413, detail="La pièce ne doit pas dépasser 10 Mo.")
@@ -3535,6 +3613,119 @@ def refresh_application_completeness(
         result = _refresh_application_status(connection, owner.workspace_id, application_id)
         connection.commit()
     return result
+
+
+@app.post(
+    "/api/biens/{property_id}/candidatures/{application_id}/agent/relancer-completude",
+    response_model=CandidateCompletenessFollowUp,
+    status_code=201,
+)
+def agent_request_missing_documents(
+    property_id: str,
+    application_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> CandidateCompletenessFollowUp:
+    """Queue one safe, idempotent request for missing candidate documents.
+
+    The action may ask for documents but never changes the application to
+    ``refusee``. That decision remains an explicit owner action.
+    """
+
+    with closing(_connect()) as connection:
+        application = _application_for_owner(connection, owner, property_id, application_id)
+        completeness = _application_completeness(connection, owner.workspace_id, application_id)
+        missing_types = _completeness_followup_types(completeness)
+        created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        if not missing_types:
+            return CandidateCompletenessFollowUp(
+                id=f"no-followup-{application_id}",
+                candidature_id=application_id,
+                pieces_demandees=[],
+                statut="aucune_piece_manquante",
+                created_at=created_at,
+            )
+
+        if not application["candidat_email"]:
+            return CandidateCompletenessFollowUp(
+                id=f"no-email-{application_id}",
+                candidature_id=application_id,
+                pieces_demandees=missing_types,
+                statut="sans_email",
+                created_at=created_at,
+            )
+
+        missing_signature = hashlib.sha256(
+            ",".join(missing_types).encode("utf-8")
+        ).hexdigest()
+        existing = connection.execute(
+            """
+            SELECT * FROM candidate_completeness_followups
+            WHERE workspace_id = ? AND application_id = ? AND missing_signature = ?
+            """,
+            (owner.workspace_id, application_id, missing_signature),
+        ).fetchone()
+        if existing is not None:
+            return _candidate_followup_from_row(existing)
+
+        _, token, _ = _issue_candidate_access_link(
+            connection,
+            workspace_id=owner.workspace_id,
+            application_id=application_id,
+            property_id=property_id,
+        )
+        deposit_link = _candidate_access_url(token)
+        message_id = f"message-candidat-{uuid4().hex[:16]}"
+        labels = [DOCUMENT_TYPE_LABELS[document_type] for document_type in missing_types]
+        requested_lines = "\n".join(f"- {label}" for label in labels)
+        message_body = (
+            f"Bonjour {application['candidat_prenom']},\n\n"
+            "Pour poursuivre votre candidature, merci de transmettre uniquement les pièces suivantes :\n"
+            f"{requested_lines}\n\n"
+            f"Déposez-les ici : {deposit_link}\n\n"
+            "Aucun autre document n'est nécessaire à ce stade. Nous vous recontacterons si une vérification "
+            "fait apparaître une incohérence."
+        )
+        connection.execute(
+            """
+            INSERT INTO candidate_messages(
+                id, workspace_id, application_id, property_id, direction,
+                sujet, contenu, source, statut, created_at
+            ) VALUES (?, ?, ?, ?, 'sortant', ?, ?, 'agent', 'a_envoyer', datetime('now'))
+            """,
+            (
+                message_id,
+                owner.workspace_id,
+                application_id,
+                property_id,
+                "Pièces nécessaires pour votre candidature",
+                message_body,
+            ),
+        )
+        followup_id = f"candidate-followup-{uuid4().hex[:16]}"
+        connection.execute(
+            """
+            INSERT INTO candidate_completeness_followups(
+                id, workspace_id, application_id, property_id,
+                missing_signature, missing_types_json, message_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                followup_id,
+                owner.workspace_id,
+                application_id,
+                property_id,
+                missing_signature,
+                json.dumps(missing_types, ensure_ascii=False),
+                message_id,
+            ),
+        )
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM candidate_completeness_followups WHERE id = ?",
+            (followup_id,),
+        ).fetchone()
+    return _candidate_followup_from_row(row, status="a_envoyer", link=deposit_link)
 
 
 @app.get("/api/biens/{property_id}/candidatures", response_model=list[OwnerApplication])

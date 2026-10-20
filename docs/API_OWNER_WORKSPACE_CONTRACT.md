@@ -83,12 +83,12 @@ Les pièces sont rattachées à la candidature, au bien et au workspace. Les cin
 Les routes sont :
 
 - `GET /api/biens/{id}/candidatures/{application_id}/pieces` pour lister les pièces privées ;
-- `POST /api/biens/{id}/candidatures/{application_id}/pieces` pour déposer un PDF, JPG, PNG ou HEIC ;
+- `POST /api/biens/{id}/candidatures/{application_id}/pieces` pour déposer un PDF, JPG ou PNG de 10 Mo maximum ;
 - `PUT /api/biens/{id}/candidatures/{application_id}/pieces/{document_id}/verification` pour changer le statut de vérification ;
 - `GET /api/biens/{id}/candidatures/{application_id}/completude` pour lire le résultat ;
 - `POST /api/biens/{id}/candidatures/{application_id}/verifier` pour recalculer et synchroniser le statut de la candidature.
 
-Une pièce conserve son type, sa provenance (`email`, `dossier_facile`, `portail_candidat`, `import` ou `autre`), son empreinte SHA-256, son statut et sa date d’expiration. Les statuts sont `recu`, `en_verification`, `valide`, `a_corriger`, `expire` et `refuse`.
+Une pièce conserve son type, sa provenance (`email`, `dossier_facile`, `portail_candidat`, `import` ou `autre`), son empreinte SHA-256, son statut et sa date d'expiration. Les statuts sont `recu`, `en_verification`, `valide`, `a_corriger`, `expire` et `refuse`.
 
 Le moteur est déterministe : une pièce manquante produit `manquante`, une pièce reçue mais non vérifiée produit `en_verification`, une pièce valide produit `valide` et une pièce dépassée produit `expire`. Le score compte uniquement les cinq catégories requises. Un dossier DossierFacile officiellement vérifié peut couvrir ces catégories avec la mention `verifiee_par_dossier_facile`, sans recopier les documents originaux dans Piaule Fiction.
 
@@ -105,6 +105,8 @@ Le portail candidat expose uniquement :
 - `POST /api/candidature-acces/{token}/messages` pour répondre à une demande.
 
 Les messages du candidat sont stockés dans `candidate_messages` et restent rattachés au bon workspace, bien et dossier. Le propriétaire peut consulter la conversation et préparer une réponse via `GET/POST /api/biens/{id}/candidatures/{application_id}/messages`. Une réponse sortante est d’abord marquée `a_envoyer` ; le fournisseur SMTP sera responsable de l’envoi et du passage à `envoye`.
+
+L’agent peut préparer une demande ciblée avec `POST /api/biens/{id}/candidatures/{application_id}/agent/relancer-completude`. Cette action ne demande que les catégories manquantes, expirées, refusées ou à corriger, crée un message sortant `source=agent` dans la file d’envoi et génère un nouveau lien de dépôt valable trente jours. Elle est idempotente pour un même ensemble de pièces afin d’éviter les relances en double. L’envoi de cette demande ne nécessite pas de validation du propriétaire une fois le fournisseur d’e-mails configuré. L’agent ne peut pas passer la candidature à `refusee` : cette décision reste une action explicite du propriétaire.
 
 Lorsqu’un e-mail entrant arrive sur une adresse d’annonce, le backend tente une association déterministe avec une candidature du même bien et de la même adresse e-mail. Une correspondance unique crée aussi un message entrant dans la conversation. Une correspondance ambiguë reste dans l’inbox pour traitement par l’agent.
 
