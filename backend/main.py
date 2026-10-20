@@ -617,7 +617,7 @@ APPLICATION_STATUS_TRANSITIONS = {
     "recue": {"a_completer", "en_verification", "prete", "refusee", "retiree"},
     "a_completer": {"recue", "en_verification", "prete", "refusee", "retiree"},
     "en_verification": {"recue", "a_completer", "prete", "refusee", "retiree"},
-    "prete": {"a_completer", "en_verification", "visite_proposee", "retenue", "refusee", "retiree"},
+    "prete": {"a_completer", "en_verification", "visite_proposee", "refusee", "retiree"},
     "visite_proposee": {"prete", "visite_confirmee", "refusee", "retiree"},
     "visite_confirmee": {"visite_proposee", "retenue", "refusee", "retiree"},
     "retenue": {"refusee", "retiree"},

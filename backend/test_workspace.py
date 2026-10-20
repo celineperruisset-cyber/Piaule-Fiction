@@ -1750,6 +1750,29 @@ def test_selected_application_becomes_tenant_and_rejected_application_is_purged(
         )
         access_token = access.json()["url"].split("?access=", 1)[1]
 
+        slot = owner.post(
+            f"/api/biens/{property_id}/visite-creneaux",
+            json={
+                "debut": "2027-01-10T10:00:00+01:00",
+                "fin": "2027-01-10T10:30:00+01:00",
+                "mode": "sur_place",
+            },
+        )
+        assert slot.status_code == 201
+        proposed_visit = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/visites/proposer",
+            json={"slot_id": slot.json()["id"]},
+        )
+        assert proposed_visit.status_code == 201
+        confirmed_visit = owner.post(
+            f"/api/candidature-acces/{access_token}/visites/{proposed_visit.json()['id']}/reponse",
+            json={"accepte": True},
+        )
+        assert confirmed_visit.status_code == 200
+        assert owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}"
+        ).json()["statut"] == "visite_confirmee"
+
         selected = owner.post(
             f"/api/biens/{property_id}/candidatures/{application_id}/statut",
             json={"statut": "retenue", "motif": "Dossier sélectionné par le propriétaire."},
