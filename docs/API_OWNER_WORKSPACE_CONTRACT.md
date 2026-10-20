@@ -41,4 +41,6 @@ Le premier domaine persistant est maintenant disponible :
 
 Toutes ces routes exigent une session propriétaire et filtrent par `workspace_id`. Un lot possède un identifiant unique dans son bien, ses caractéristiques principales, ses paramètres financiers et un statut de cycle de vie (`brouillon`, `disponible`, `occupe`, `archive`).
 
-Cette première fiche est volontairement minimale. Les extensions prévues sont documentées dans [`PROPERTY_MANAGEMENT_RESEARCH.md`](PROPERTY_MANAGEMENT_RESEARCH.md) : types de location, équipements, disponibilité, diagnostics et échéances, puis immeubles, tantièmes, copropriété et rentabilité.
+La fiche comprend maintenant les types de location, équipements, disponibilité, photos, visibilité de l’adresse, informations DPE, mode de détention et premiers champs de copropriété. Les routes `POST/GET/PUT /api/biens/{id}/suivis` permettent de suivre diagnostics, assurances, contrats fournisseurs et documents de copropriété avec leurs échéances. `GET /api/echeances` remonte les éléments expirés ou arrivant à échéance.
+
+La comptabilité, la fiscalité, le financement, la rentabilité et les tableaux financiers ne font pas partie du produit. Les champs de loyer, charges et dépôt servent uniquement à configurer une mise en location et ses règles opérationnelles.

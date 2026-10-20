@@ -98,4 +98,4 @@ workspace
         └── échéances, tâches et agents
 ```
 
-La prochaine extension backend devrait enrichir les lots avec le type de location, les équipements, la disponibilité et les échéances principales. La copropriété, la rentabilité et la comptabilité détaillée viendront après la boucle bien → candidature → validation → visite.
+La tranche backend suivante devra relier ces biens aux candidatures, documents et validations. La comptabilité, la fiscalité, le financement, la rentabilité et les tableaux financiers restent volontairement hors périmètre de Piaule Fiction.

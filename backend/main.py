@@ -107,12 +107,25 @@ class WorkspaceMember(BaseModel):
 class PropertyCreate(BaseModel):
     nom: str = Field(min_length=2, max_length=120)
     type: Literal["immeuble", "maison", "appartement", "autre"] = "immeuble"
+    structure: Literal["immeuble", "bien_individuel"] = "bien_individuel"
     adresse_ligne1: str = Field(min_length=3, max_length=160)
     adresse_ligne2: str = Field(default="", max_length=160)
     code_postal: str = Field(default="", max_length=20)
     ville: str = Field(min_length=2, max_length=100)
     pays: str = Field(default="France", max_length=80)
     description: str = Field(default="", max_length=2000)
+    description_publique: str = Field(default="", max_length=2000)
+    statut: Literal["preparation", "vacant", "partiellement_occupe", "occupe", "archive"] = "preparation"
+    date_disponibilite: date | None = None
+    mode_detention: Literal["nom_propre", "indivision", "sci", "lmnp", "autre"] = "nom_propre"
+    adresse_exacte_visible: bool = False
+    equipements: list[str] = Field(default_factory=list)
+    photos: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    syndic_nom: str = Field(default="", max_length=120)
+    syndic_email: str = Field(default="", max_length=254)
+    syndic_telephone: str = Field(default="", max_length=30)
+    tantiemes_total: float | None = Field(default=None, ge=0, le=1_000_000)
 
 
 class Property(PropertyCreate):
@@ -126,17 +139,54 @@ class Property(PropertyCreate):
 class LotCreate(BaseModel):
     identifiant: str = Field(min_length=1, max_length=80)
     type: Literal["appartement", "maison", "studio", "chambre", "local", "autre"] = "appartement"
+    type_location: Literal["non_precise", "vide", "meuble", "etudiant", "mobilite", "colocation", "parking", "local"] = "non_precise"
     etage: str = Field(default="", max_length=30)
     surface_m2: float | None = Field(default=None, ge=0, le=10000)
     pieces: int | None = Field(default=None, ge=0, le=100)
     chambres: int | None = Field(default=None, ge=0, le=100)
     loyer_mensuel_eur: int | None = Field(default=None, ge=0, le=1_000_000)
     charges_mensuelles_eur: int = Field(default=0, ge=0, le=1_000_000)
+    type_charges: Literal["aucune", "provision", "forfait"] = "aucune"
     depot_garantie_eur: int | None = Field(default=None, ge=0, le=1_000_000)
+    date_disponibilite: date | None = None
+    revision_irl_active: bool = False
+    indice_irl_reference: str = Field(default="", max_length=30)
+    date_revision: date | None = None
+    dpe_classe: Literal["inconnu", "A", "B", "C", "D", "E", "F", "G"] = "inconnu"
+    ges_classe: Literal["inconnu", "A", "B", "C", "D", "E", "F", "G"] = "inconnu"
+    dpe_date: date | None = None
+    chauffage: str = Field(default="", max_length=100)
+    eau_chaude: str = Field(default="", max_length=100)
+    ascenseur: bool = False
+    accessibilite: str = Field(default="", max_length=300)
+    equipements: list[str] = Field(default_factory=list)
+    dependances: list[str] = Field(default_factory=list)
+    photos: list[str] = Field(default_factory=list)
+    tantiemes_generaux: float | None = Field(default=None, ge=0, le=1_000_000)
     statut: Literal["brouillon", "disponible", "occupe", "archive"] = "brouillon"
 
 
 class Lot(LotCreate):
+    id: str
+    workspace_id: str
+    bien_id: str
+    created_at: str
+    updated_at: str
+
+
+class PropertyRecordCreate(BaseModel):
+    type: Literal["diagnostic", "assurance", "contrat_fournisseur", "document_copropriete", "autre"]
+    titre: str = Field(min_length=2, max_length=160)
+    lot_id: str | None = None
+    fournisseur: str = Field(default="", max_length=160)
+    reference: str = Field(default="", max_length=120)
+    date_etablissement: date | None = None
+    date_expiration: date | None = None
+    statut: Literal["a_verifier", "valide", "expire"] = "a_verifier"
+    notes: str = Field(default="", max_length=2000)
+
+
+class PropertyRecord(PropertyRecordCreate):
     id: str
     workspace_id: str
     bien_id: str
@@ -237,6 +287,16 @@ profiles: dict[str, SearchProfile] = {}
 applications: dict[str, Application] = {}
 
 
+def _ensure_column(
+    connection: sqlite3.Connection, table: str, column: str, definition: str
+) -> None:
+    """Add a newly introduced schema column to an existing local database."""
+
+    columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def _clean_text(value: str, maximum: int) -> str:
     """Remove control characters and spreadsheet formula prefixes from text."""
 
@@ -288,12 +348,25 @@ def _ensure_database() -> None:
                 workspace_id TEXT NOT NULL,
                 nom TEXT NOT NULL,
                 property_type TEXT NOT NULL,
+                structure_type TEXT NOT NULL DEFAULT 'bien_individuel',
                 adresse_ligne1 TEXT NOT NULL,
                 adresse_ligne2 TEXT NOT NULL DEFAULT '',
                 code_postal TEXT NOT NULL DEFAULT '',
                 ville TEXT NOT NULL,
                 pays TEXT NOT NULL DEFAULT 'France',
                 description TEXT NOT NULL DEFAULT '',
+                description_publique TEXT NOT NULL DEFAULT '',
+                statut TEXT NOT NULL DEFAULT 'preparation',
+                date_disponibilite TEXT,
+                mode_detention TEXT NOT NULL DEFAULT 'nom_propre',
+                adresse_exacte_visible INTEGER NOT NULL DEFAULT 0,
+                equipements_json TEXT NOT NULL DEFAULT '[]',
+                photos_json TEXT NOT NULL DEFAULT '[]',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                syndic_nom TEXT NOT NULL DEFAULT '',
+                syndic_email TEXT NOT NULL DEFAULT '',
+                syndic_telephone TEXT NOT NULL DEFAULT '',
+                tantiemes_total REAL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
@@ -305,13 +378,30 @@ def _ensure_database() -> None:
                 property_id TEXT NOT NULL,
                 identifiant TEXT NOT NULL,
                 lot_type TEXT NOT NULL,
+                type_location TEXT NOT NULL DEFAULT 'non_precise',
                 etage TEXT NOT NULL DEFAULT '',
                 surface_m2 REAL,
                 pieces INTEGER,
                 chambres INTEGER,
                 loyer_mensuel_eur INTEGER,
                 charges_mensuelles_eur INTEGER NOT NULL DEFAULT 0,
+                type_charges TEXT NOT NULL DEFAULT 'aucune',
                 depot_garantie_eur INTEGER,
+                date_disponibilite TEXT,
+                revision_irl_active INTEGER NOT NULL DEFAULT 0,
+                indice_irl_reference TEXT NOT NULL DEFAULT '',
+                date_revision TEXT,
+                dpe_classe TEXT NOT NULL DEFAULT 'inconnu',
+                ges_classe TEXT NOT NULL DEFAULT 'inconnu',
+                dpe_date TEXT,
+                chauffage TEXT NOT NULL DEFAULT '',
+                eau_chaude TEXT NOT NULL DEFAULT '',
+                ascenseur INTEGER NOT NULL DEFAULT 0,
+                accessibilite TEXT NOT NULL DEFAULT '',
+                equipements_json TEXT NOT NULL DEFAULT '[]',
+                dependances_json TEXT NOT NULL DEFAULT '[]',
+                photos_json TEXT NOT NULL DEFAULT '[]',
+                tantiemes_generaux REAL,
                 statut TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -321,6 +411,28 @@ def _ensure_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS lots_workspace_idx ON lots(workspace_id);
             CREATE INDEX IF NOT EXISTS lots_property_idx ON lots(property_id);
+            CREATE TABLE IF NOT EXISTS property_records (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                lot_id TEXT,
+                record_type TEXT NOT NULL,
+                titre TEXT NOT NULL,
+                fournisseur TEXT NOT NULL DEFAULT '',
+                reference TEXT NOT NULL DEFAULT '',
+                date_etablissement TEXT,
+                date_expiration TEXT,
+                statut TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                FOREIGN KEY(lot_id) REFERENCES lots(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS property_records_workspace_idx ON property_records(workspace_id);
+            CREATE INDEX IF NOT EXISTS property_records_property_idx ON property_records(property_id);
+            CREATE INDEX IF NOT EXISTS property_records_expiry_idx ON property_records(date_expiration);
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
                 email TEXT NOT NULL,
@@ -406,6 +518,43 @@ def _ensure_database() -> None:
         connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS candidates_google_sub_idx ON candidates(google_sub) WHERE google_sub IS NOT NULL AND google_sub <> ''"
         )
+
+        for column, definition in (
+            ("structure_type", "TEXT NOT NULL DEFAULT 'bien_individuel'"),
+            ("description_publique", "TEXT NOT NULL DEFAULT ''"),
+            ("statut", "TEXT NOT NULL DEFAULT 'preparation'"),
+            ("date_disponibilite", "TEXT"),
+            ("mode_detention", "TEXT NOT NULL DEFAULT 'nom_propre'"),
+            ("adresse_exacte_visible", "INTEGER NOT NULL DEFAULT 0"),
+            ("equipements_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("photos_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("tags_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("syndic_nom", "TEXT NOT NULL DEFAULT ''"),
+            ("syndic_email", "TEXT NOT NULL DEFAULT ''"),
+            ("syndic_telephone", "TEXT NOT NULL DEFAULT ''"),
+            ("tantiemes_total", "REAL"),
+        ):
+            _ensure_column(connection, "properties", column, definition)
+        for column, definition in (
+            ("type_location", "TEXT NOT NULL DEFAULT 'non_precise'"),
+            ("type_charges", "TEXT NOT NULL DEFAULT 'aucune'"),
+            ("date_disponibilite", "TEXT"),
+            ("revision_irl_active", "INTEGER NOT NULL DEFAULT 0"),
+            ("indice_irl_reference", "TEXT NOT NULL DEFAULT ''"),
+            ("date_revision", "TEXT"),
+            ("dpe_classe", "TEXT NOT NULL DEFAULT 'inconnu'"),
+            ("ges_classe", "TEXT NOT NULL DEFAULT 'inconnu'"),
+            ("dpe_date", "TEXT"),
+            ("chauffage", "TEXT NOT NULL DEFAULT ''"),
+            ("eau_chaude", "TEXT NOT NULL DEFAULT ''"),
+            ("ascenseur", "INTEGER NOT NULL DEFAULT 0"),
+            ("accessibilite", "TEXT NOT NULL DEFAULT ''"),
+            ("equipements_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("dependances_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("photos_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("tantiemes_generaux", "REAL"),
+        ):
+            _ensure_column(connection, "lots", column, definition)
 
         # Give legacy accounts a workspace before any workspace-scoped route is used.
         legacy_accounts = connection.execute(
@@ -647,12 +796,25 @@ def _property_from_row(row: sqlite3.Row) -> Property:
         workspace_id=row["workspace_id"],
         nom=row["nom"],
         type=row["property_type"],
+        structure=row["structure_type"],
         adresse_ligne1=row["adresse_ligne1"],
         adresse_ligne2=row["adresse_ligne2"],
         code_postal=row["code_postal"],
         ville=row["ville"],
         pays=row["pays"],
         description=row["description"],
+        description_publique=row["description_publique"],
+        statut=row["statut"],
+        date_disponibilite=date.fromisoformat(row["date_disponibilite"]) if row["date_disponibilite"] else None,
+        mode_detention=row["mode_detention"],
+        adresse_exacte_visible=bool(row["adresse_exacte_visible"]),
+        equipements=json.loads(row["equipements_json"] or "[]"),
+        photos=json.loads(row["photos_json"] or "[]"),
+        tags=json.loads(row["tags_json"] or "[]"),
+        syndic_nom=row["syndic_nom"],
+        syndic_email=row["syndic_email"],
+        syndic_telephone=row["syndic_telephone"],
+        tantiemes_total=row["tantiemes_total"],
         lots_count=row["lots_count"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -666,14 +828,50 @@ def _lot_from_row(row: sqlite3.Row) -> Lot:
         bien_id=row["property_id"],
         identifiant=row["identifiant"],
         type=row["lot_type"],
+        type_location=row["type_location"],
         etage=row["etage"],
         surface_m2=row["surface_m2"],
         pieces=row["pieces"],
         chambres=row["chambres"],
         loyer_mensuel_eur=row["loyer_mensuel_eur"],
         charges_mensuelles_eur=row["charges_mensuelles_eur"],
+        type_charges=row["type_charges"],
         depot_garantie_eur=row["depot_garantie_eur"],
+        date_disponibilite=date.fromisoformat(row["date_disponibilite"]) if row["date_disponibilite"] else None,
+        revision_irl_active=bool(row["revision_irl_active"]),
+        indice_irl_reference=row["indice_irl_reference"],
+        date_revision=date.fromisoformat(row["date_revision"]) if row["date_revision"] else None,
+        dpe_classe=row["dpe_classe"],
+        ges_classe=row["ges_classe"],
+        dpe_date=date.fromisoformat(row["dpe_date"]) if row["dpe_date"] else None,
+        chauffage=row["chauffage"],
+        eau_chaude=row["eau_chaude"],
+        ascenseur=bool(row["ascenseur"]),
+        accessibilite=row["accessibilite"],
+        equipements=json.loads(row["equipements_json"] or "[]"),
+        dependances=json.loads(row["dependances_json"] or "[]"),
+        photos=json.loads(row["photos_json"] or "[]"),
+        tantiemes_generaux=row["tantiemes_generaux"],
         statut=row["statut"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _property_record_from_row(row: sqlite3.Row) -> PropertyRecord:
+    return PropertyRecord(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        bien_id=row["property_id"],
+        lot_id=row["lot_id"],
+        type=row["record_type"],
+        titre=row["titre"],
+        fournisseur=row["fournisseur"],
+        reference=row["reference"],
+        date_etablissement=date.fromisoformat(row["date_etablissement"]) if row["date_etablissement"] else None,
+        date_expiration=date.fromisoformat(row["date_expiration"]) if row["date_expiration"] else None,
+        statut=row["statut"],
+        notes=row["notes"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -712,16 +910,38 @@ def _owned_lot_row(
     return row
 
 
+def _clean_string_list(values: list[str], maximum_items: int = 30, maximum_length: int = 120) -> list[str]:
+    cleaned: list[str] = []
+    for value in values[:maximum_items]:
+        item = _clean_text(value, maximum_length)
+        if item and item not in cleaned:
+            cleaned.append(item)
+    return cleaned
+
+
 def _clean_property_payload(payload: PropertyCreate) -> PropertyCreate:
     cleaned = PropertyCreate(
         nom=_clean_text(payload.nom, 120),
         type=payload.type,
+        structure=payload.structure,
         adresse_ligne1=_clean_text(payload.adresse_ligne1, 160),
         adresse_ligne2=_clean_text(payload.adresse_ligne2, 160),
         code_postal=_clean_text(payload.code_postal, 20),
         ville=_clean_text(payload.ville, 100),
         pays=_clean_text(payload.pays, 80) or "France",
         description=_clean_text(payload.description, 2000),
+        description_publique=_clean_text(payload.description_publique, 2000),
+        statut=payload.statut,
+        date_disponibilite=payload.date_disponibilite,
+        mode_detention=payload.mode_detention,
+        adresse_exacte_visible=payload.adresse_exacte_visible,
+        equipements=_clean_string_list(payload.equipements),
+        photos=_clean_string_list(payload.photos, maximum_length=500),
+        tags=_clean_string_list(payload.tags, maximum_length=50),
+        syndic_nom=_clean_text(payload.syndic_nom, 120),
+        syndic_email=_normalise_email(payload.syndic_email) if payload.syndic_email else "",
+        syndic_telephone=_clean_text(payload.syndic_telephone, 30),
+        tantiemes_total=payload.tantiemes_total,
     )
     if len(cleaned.nom) < 2 or len(cleaned.adresse_ligne1) < 3 or len(cleaned.ville) < 2:
         raise HTTPException(status_code=400, detail="Le nom, l'adresse et la ville sont obligatoires.")
@@ -732,13 +952,30 @@ def _clean_lot_payload(payload: LotCreate) -> LotCreate:
     cleaned = LotCreate(
         identifiant=_clean_text(payload.identifiant, 80),
         type=payload.type,
+        type_location=payload.type_location,
         etage=_clean_text(payload.etage, 30),
         surface_m2=payload.surface_m2,
         pieces=payload.pieces,
         chambres=payload.chambres,
         loyer_mensuel_eur=payload.loyer_mensuel_eur,
         charges_mensuelles_eur=payload.charges_mensuelles_eur,
+        type_charges=payload.type_charges,
         depot_garantie_eur=payload.depot_garantie_eur,
+        date_disponibilite=payload.date_disponibilite,
+        revision_irl_active=payload.revision_irl_active,
+        indice_irl_reference=_clean_text(payload.indice_irl_reference, 30),
+        date_revision=payload.date_revision,
+        dpe_classe=payload.dpe_classe,
+        ges_classe=payload.ges_classe,
+        dpe_date=payload.dpe_date,
+        chauffage=_clean_text(payload.chauffage, 100),
+        eau_chaude=_clean_text(payload.eau_chaude, 100),
+        ascenseur=payload.ascenseur,
+        accessibilite=_clean_text(payload.accessibilite, 300),
+        equipements=_clean_string_list(payload.equipements),
+        dependances=_clean_string_list(payload.dependances),
+        photos=_clean_string_list(payload.photos, maximum_length=500),
+        tantiemes_generaux=payload.tantiemes_generaux,
         statut=payload.statut,
     )
     if not cleaned.identifiant:
@@ -1150,22 +1387,38 @@ def create_property(
         connection.execute(
             """
             INSERT INTO properties(
-                id, workspace_id, nom, property_type, adresse_ligne1,
-                adresse_ligne2, code_postal, ville, pays, description,
+                id, workspace_id, nom, property_type, structure_type, adresse_ligne1,
+                adresse_ligne2, code_postal, ville, pays, description, description_publique,
+                statut, date_disponibilite, mode_detention, adresse_exacte_visible,
+                equipements_json, photos_json, tags_json, syndic_nom, syndic_email,
+                syndic_telephone, tantiemes_total,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
             """,
             (
                 property_id,
                 owner.workspace_id,
                 cleaned.nom,
                 cleaned.type,
+                cleaned.structure,
                 cleaned.adresse_ligne1,
                 cleaned.adresse_ligne2,
                 cleaned.code_postal,
                 cleaned.ville,
                 cleaned.pays,
                 cleaned.description,
+                cleaned.description_publique,
+                cleaned.statut,
+                cleaned.date_disponibilite.isoformat() if cleaned.date_disponibilite else None,
+                cleaned.mode_detention,
+                int(cleaned.adresse_exacte_visible),
+                json.dumps(cleaned.equipements, ensure_ascii=False),
+                json.dumps(cleaned.photos, ensure_ascii=False),
+                json.dumps(cleaned.tags, ensure_ascii=False),
+                cleaned.syndic_nom,
+                cleaned.syndic_email,
+                cleaned.syndic_telephone,
+                cleaned.tantiemes_total,
             ),
         )
         connection.commit()
@@ -1196,19 +1449,35 @@ def update_property(
         connection.execute(
             """
             UPDATE properties SET
-                nom = ?, property_type = ?, adresse_ligne1 = ?, adresse_ligne2 = ?,
-                code_postal = ?, ville = ?, pays = ?, description = ?, updated_at = datetime('now')
+                nom = ?, property_type = ?, structure_type = ?, adresse_ligne1 = ?, adresse_ligne2 = ?,
+                code_postal = ?, ville = ?, pays = ?, description = ?, description_publique = ?,
+                statut = ?, date_disponibilite = ?, mode_detention = ?, adresse_exacte_visible = ?,
+                equipements_json = ?, photos_json = ?, tags_json = ?, syndic_nom = ?, syndic_email = ?,
+                syndic_telephone = ?, tantiemes_total = ?, updated_at = datetime('now')
             WHERE id = ? AND workspace_id = ?
             """,
             (
                 cleaned.nom,
                 cleaned.type,
+                cleaned.structure,
                 cleaned.adresse_ligne1,
                 cleaned.adresse_ligne2,
                 cleaned.code_postal,
                 cleaned.ville,
                 cleaned.pays,
                 cleaned.description,
+                cleaned.description_publique,
+                cleaned.statut,
+                cleaned.date_disponibilite.isoformat() if cleaned.date_disponibilite else None,
+                cleaned.mode_detention,
+                int(cleaned.adresse_exacte_visible),
+                json.dumps(cleaned.equipements, ensure_ascii=False),
+                json.dumps(cleaned.photos, ensure_ascii=False),
+                json.dumps(cleaned.tags, ensure_ascii=False),
+                cleaned.syndic_nom,
+                cleaned.syndic_email,
+                cleaned.syndic_telephone,
+                cleaned.tantiemes_total,
                 property_id,
                 owner.workspace_id,
             ),
@@ -1251,11 +1520,14 @@ def create_lot(
             connection.execute(
                 """
                 INSERT INTO lots(
-                    id, workspace_id, property_id, identifiant, lot_type, etage,
-                    surface_m2, pieces, chambres, loyer_mensuel_eur,
-                    charges_mensuelles_eur, depot_garantie_eur, statut,
+                    id, workspace_id, property_id, identifiant, lot_type, type_location, etage,
+                    surface_m2, pieces, chambres, loyer_mensuel_eur, charges_mensuelles_eur,
+                    type_charges, depot_garantie_eur, date_disponibilite, revision_irl_active,
+                    indice_irl_reference, date_revision, dpe_classe, ges_classe, dpe_date,
+                    chauffage, eau_chaude, ascenseur, accessibilite, equipements_json,
+                    dependances_json, photos_json, tantiemes_generaux, statut,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 """,
                 (
                     lot_id,
@@ -1263,13 +1535,30 @@ def create_lot(
                     property_id,
                     cleaned.identifiant,
                     cleaned.type,
+                    cleaned.type_location,
                     cleaned.etage,
                     cleaned.surface_m2,
                     cleaned.pieces,
                     cleaned.chambres,
                     cleaned.loyer_mensuel_eur,
                     cleaned.charges_mensuelles_eur,
+                    cleaned.type_charges,
                     cleaned.depot_garantie_eur,
+                    cleaned.date_disponibilite.isoformat() if cleaned.date_disponibilite else None,
+                    int(cleaned.revision_irl_active),
+                    cleaned.indice_irl_reference,
+                    cleaned.date_revision.isoformat() if cleaned.date_revision else None,
+                    cleaned.dpe_classe,
+                    cleaned.ges_classe,
+                    cleaned.dpe_date.isoformat() if cleaned.dpe_date else None,
+                    cleaned.chauffage,
+                    cleaned.eau_chaude,
+                    int(cleaned.ascenseur),
+                    cleaned.accessibilite,
+                    json.dumps(cleaned.equipements, ensure_ascii=False),
+                    json.dumps(cleaned.dependances, ensure_ascii=False),
+                    json.dumps(cleaned.photos, ensure_ascii=False),
+                    cleaned.tantiemes_generaux,
                     cleaned.statut,
                 ),
             )
@@ -1303,22 +1592,42 @@ def update_lot(
             connection.execute(
                 """
                 UPDATE lots SET
-                    identifiant = ?, lot_type = ?, etage = ?, surface_m2 = ?,
-                    pieces = ?, chambres = ?, loyer_mensuel_eur = ?,
-                    charges_mensuelles_eur = ?, depot_garantie_eur = ?,
-                    statut = ?, updated_at = datetime('now')
+                    identifiant = ?, lot_type = ?, type_location = ?, etage = ?, surface_m2 = ?,
+                    pieces = ?, chambres = ?, loyer_mensuel_eur = ?, charges_mensuelles_eur = ?,
+                    type_charges = ?, depot_garantie_eur = ?, date_disponibilite = ?,
+                    revision_irl_active = ?, indice_irl_reference = ?, date_revision = ?,
+                    dpe_classe = ?, ges_classe = ?, dpe_date = ?, chauffage = ?, eau_chaude = ?,
+                    ascenseur = ?, accessibilite = ?, equipements_json = ?, dependances_json = ?,
+                    photos_json = ?, tantiemes_generaux = ?, statut = ?, updated_at = datetime('now')
                 WHERE id = ? AND property_id = ? AND workspace_id = ?
                 """,
                 (
                     cleaned.identifiant,
                     cleaned.type,
+                    cleaned.type_location,
                     cleaned.etage,
                     cleaned.surface_m2,
                     cleaned.pieces,
                     cleaned.chambres,
                     cleaned.loyer_mensuel_eur,
                     cleaned.charges_mensuelles_eur,
+                    cleaned.type_charges,
                     cleaned.depot_garantie_eur,
+                    cleaned.date_disponibilite.isoformat() if cleaned.date_disponibilite else None,
+                    int(cleaned.revision_irl_active),
+                    cleaned.indice_irl_reference,
+                    cleaned.date_revision.isoformat() if cleaned.date_revision else None,
+                    cleaned.dpe_classe,
+                    cleaned.ges_classe,
+                    cleaned.dpe_date.isoformat() if cleaned.dpe_date else None,
+                    cleaned.chauffage,
+                    cleaned.eau_chaude,
+                    int(cleaned.ascenseur),
+                    cleaned.accessibilite,
+                    json.dumps(cleaned.equipements, ensure_ascii=False),
+                    json.dumps(cleaned.dependances, ensure_ascii=False),
+                    json.dumps(cleaned.photos, ensure_ascii=False),
+                    cleaned.tantiemes_generaux,
                     cleaned.statut,
                     lot_id,
                     property_id,
@@ -1330,6 +1639,159 @@ def update_lot(
         connection.commit()
         row = _owned_lot_row(connection, owner, property_id, lot_id)
     return _lot_from_row(row)
+
+
+def _owned_property_record_row(
+    connection: sqlite3.Connection, owner: Candidate, property_id: str, record_id: str
+) -> sqlite3.Row:
+    row = connection.execute(
+        "SELECT * FROM property_records WHERE id = ? AND property_id = ? AND workspace_id = ?",
+        (record_id, property_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Suivi introuvable dans ce workspace.")
+    return row
+
+
+def _clean_property_record_payload(payload: PropertyRecordCreate) -> PropertyRecordCreate:
+    if payload.date_etablissement and payload.date_expiration and payload.date_expiration < payload.date_etablissement:
+        raise HTTPException(status_code=400, detail="La date d'expiration ne peut pas précéder la date d'établissement.")
+    return PropertyRecordCreate(
+        type=payload.type,
+        titre=_clean_text(payload.titre, 160),
+        lot_id=_clean_text(payload.lot_id, 80) if payload.lot_id else None,
+        fournisseur=_clean_text(payload.fournisseur, 160),
+        reference=_clean_text(payload.reference, 120),
+        date_etablissement=payload.date_etablissement,
+        date_expiration=payload.date_expiration,
+        statut=payload.statut,
+        notes=_clean_text(payload.notes, 2000),
+    )
+
+
+@app.get("/api/biens/{property_id}/suivis", response_model=list[PropertyRecord])
+def list_property_records(
+    property_id: str, owner: Candidate = Depends(current_candidate)
+) -> list[PropertyRecord]:
+    """List diagnostics, contracts and other expiry-tracked records for a property."""
+
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        rows = connection.execute(
+            """
+            SELECT * FROM property_records
+            WHERE property_id = ? AND workspace_id = ?
+            ORDER BY COALESCE(date_expiration, '9999-12-31'), created_at DESC
+            """,
+            (property_id, owner.workspace_id),
+        ).fetchall()
+    return [_property_record_from_row(row) for row in rows]
+
+
+@app.post("/api/biens/{property_id}/suivis", response_model=PropertyRecord, status_code=201)
+def create_property_record(
+    property_id: str,
+    payload: PropertyRecordCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> PropertyRecord:
+    """Create an expiry-tracked property record without uploading its file yet."""
+
+    cleaned = _clean_property_record_payload(payload)
+    record_id = f"suivi-{uuid4().hex[:16]}"
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        if cleaned.lot_id:
+            _owned_lot_row(connection, owner, property_id, cleaned.lot_id)
+        connection.execute(
+            """
+            INSERT INTO property_records(
+                id, workspace_id, property_id, lot_id, record_type, titre,
+                fournisseur, reference, date_etablissement, date_expiration,
+                statut, notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            """,
+            (
+                record_id,
+                owner.workspace_id,
+                property_id,
+                cleaned.lot_id,
+                cleaned.type,
+                cleaned.titre,
+                cleaned.fournisseur,
+                cleaned.reference,
+                cleaned.date_etablissement.isoformat() if cleaned.date_etablissement else None,
+                cleaned.date_expiration.isoformat() if cleaned.date_expiration else None,
+                cleaned.statut,
+                cleaned.notes,
+            ),
+        )
+        connection.commit()
+        row = _owned_property_record_row(connection, owner, property_id, record_id)
+    return _property_record_from_row(row)
+
+
+@app.put("/api/biens/{property_id}/suivis/{record_id}", response_model=PropertyRecord)
+def update_property_record(
+    property_id: str,
+    record_id: str,
+    payload: PropertyRecordCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> PropertyRecord:
+    cleaned = _clean_property_record_payload(payload)
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        _owned_property_record_row(connection, owner, property_id, record_id)
+        if cleaned.lot_id:
+            _owned_lot_row(connection, owner, property_id, cleaned.lot_id)
+        connection.execute(
+            """
+            UPDATE property_records SET
+                lot_id = ?, record_type = ?, titre = ?, fournisseur = ?, reference = ?,
+                date_etablissement = ?, date_expiration = ?, statut = ?, notes = ?,
+                updated_at = datetime('now')
+            WHERE id = ? AND property_id = ? AND workspace_id = ?
+            """,
+            (
+                cleaned.lot_id,
+                cleaned.type,
+                cleaned.titre,
+                cleaned.fournisseur,
+                cleaned.reference,
+                cleaned.date_etablissement.isoformat() if cleaned.date_etablissement else None,
+                cleaned.date_expiration.isoformat() if cleaned.date_expiration else None,
+                cleaned.statut,
+                cleaned.notes,
+                record_id,
+                property_id,
+                owner.workspace_id,
+            ),
+        )
+        connection.commit()
+        row = _owned_property_record_row(connection, owner, property_id, record_id)
+    return _property_record_from_row(row)
+
+
+@app.get("/api/echeances", response_model=list[PropertyRecord])
+def list_upcoming_deadlines(
+    jours: int = 30, owner: Candidate = Depends(current_candidate)
+) -> list[PropertyRecord]:
+    """Return expired and soon-expiring property records for the current workspace."""
+
+    if jours < 0 or jours > 3650:
+        raise HTTPException(status_code=400, detail="La période doit être comprise entre 0 et 3650 jours.")
+    today = date.today()
+    limit = date.fromordinal(today.toordinal() + jours)
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM property_records
+            WHERE workspace_id = ? AND date_expiration IS NOT NULL
+              AND date_expiration <= ?
+            ORDER BY date_expiration, created_at
+            """,
+            (owner.workspace_id, limit.isoformat()),
+        ).fetchall()
+    return [_property_record_from_row(row) for row in rows]
 
 
 @app.post("/api/mot-de-passe")

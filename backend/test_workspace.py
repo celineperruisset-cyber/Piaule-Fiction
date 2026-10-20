@@ -1,5 +1,6 @@
 import tempfile
 import os
+from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -125,14 +126,24 @@ def test_properties_and_lots_are_persisted_and_isolated_by_workspace():
             json={
                 "nom": "Maison de démonstration",
                 "type": "maison",
+                "structure": "bien_individuel",
                 "adresse_ligne1": "12 rue des Tests",
                 "code_postal": "73000",
                 "ville": "Chambéry",
+                "description_publique": "Maison test prête à louer",
+                "statut": "vacant",
+                "date_disponibilite": "2026-11-01",
+                "mode_detention": "nom_propre",
+                "equipements": ["jardin", "parking"],
+                "photos": ["photo-demo-1"],
+                "tags": ["centre-ville", "test"],
             },
         )
         assert created.status_code == 201
         property_id = created.json()["id"]
         assert created.json()["lots_count"] == 0
+        assert created.json()["statut"] == "vacant"
+        assert created.json()["equipements"] == ["jardin", "parking"]
 
         lot = owner.post(
             f"/api/biens/{property_id}/lots",
@@ -144,14 +155,39 @@ def test_properties_and_lots_are_persisted_and_isolated_by_workspace():
                 "chambres": 1,
                 "loyer_mensuel_eur": 700,
                 "charges_mensuelles_eur": 60,
+                "type_charges": "provision",
+                "type_location": "meuble",
+                "date_disponibilite": "2026-11-01",
+                "dpe_classe": "D",
+                "ges_classe": "B",
+                "chauffage": "Individuel électrique",
+                "ascenseur": True,
+                "equipements": ["balcon"],
                 "statut": "disponible",
             },
         )
         assert lot.status_code == 201
         lot_id = lot.json()["id"]
         assert lot.json()["bien_id"] == property_id
+        assert lot.json()["type_location"] == "meuble"
+        assert lot.json()["dpe_classe"] == "D"
         assert len(owner.get(f"/api/biens/{property_id}/lots").json()) == 1
         assert owner.get(f"/api/biens/{property_id}").json()["lots_count"] == 1
+
+        record = owner.post(
+            f"/api/biens/{property_id}/suivis",
+            json={
+                "type": "diagnostic",
+                "titre": "Diagnostic de performance énergétique",
+                "lot_id": lot_id,
+                "date_etablissement": "2026-10-01",
+                "date_expiration": (date.today() + timedelta(days=7)).isoformat(),
+                "statut": "valide",
+            },
+        )
+        assert record.status_code == 201
+        assert record.json()["lot_id"] == lot_id
+        assert len(owner.get("/api/echeances?jours=30").json()) == 1
 
         duplicate = owner.post(
             f"/api/biens/{property_id}/lots",
