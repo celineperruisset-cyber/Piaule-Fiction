@@ -50,6 +50,8 @@ Le pipeline propriétaire est disponible avec :
 
 Une candidature est rattachée au workspace, au bien et éventuellement au lot. Elle conserve la source, la référence externe, les coordonnées minimales du candidat, les notes privées, les dates et un statut explicable : `recue`, `a_completer`, `en_verification`, `prete`, `visite_proposee`, `visite_confirmee`, `retenue`, `refusee` ou `retiree`. Une adresse e-mail répétée pour le même bien/lot déclenche `doublon_possible` au lieu de supprimer silencieusement l’information.
 
+Les transitions sont contrôlées par `POST /api/biens/{id}/candidatures/{application_id}/statut`, avec un `statut` cible et un `motif`. Une candidature ne peut pas être proposée en visite, confirmée ou retenue tant que son moteur de complétude ne la considère pas `complet`. L’historique lisible est disponible avec `GET /api/biens/{id}/candidatures/{application_id}/historique` et conserve l’ancien statut, le nouveau statut, la source et le motif. Les décisions de refus et de retenue restent des actions du propriétaire ; les recalculs de complétude et les retours DossierFacile sont enregistrés comme événements système.
+
 Toutes ces routes exigent une session propriétaire et filtrent par `workspace_id`. Un lot possède un identifiant unique dans son bien, ses caractéristiques principales, ses paramètres financiers et un statut de cycle de vie (`brouillon`, `disponible`, `occupe`, `archive`).
 
 ## Réception des candidatures depuis les annonces

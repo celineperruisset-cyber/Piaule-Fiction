@@ -569,3 +569,78 @@ def test_candidate_email_outbox_sends_queued_messages(monkeypatch):
         assert owner.get(
             f"/api/biens/{property_id}/candidatures/{application_id}/messages"
         ).json()[0]["statut"] == "envoye"
+
+
+def test_application_status_cycle_records_history_and_blocks_early_visit():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        owner = TestClient(main.app)
+        assert owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Celine",
+                "email": "status-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        ).status_code == 200
+        property_id = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien workflow",
+                "type": "appartement",
+                "adresse_ligne1": "3 rue du Test",
+                "ville": "Grenoble",
+            },
+        ).json()["id"]
+        application_id = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Demo",
+                "candidat_email": "workflow@example.test",
+            },
+        ).json()["id"]
+
+        initial_history = owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}/historique"
+        )
+        assert initial_history.status_code == 200
+        assert initial_history.json()[0]["nouveau_statut"] == "recue"
+
+        incomplete = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/statut",
+            json={"statut": "a_completer", "motif": "Deux pièces sont manquantes."},
+        )
+        assert incomplete.status_code == 200
+        assert incomplete.json()["statut"] == "a_completer"
+        assert incomplete.json()["statut_motif"] == "Deux pièces sont manquantes."
+
+        too_early = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/statut",
+            json={"statut": "visite_proposee"},
+        )
+        assert too_early.status_code == 409
+
+        refused = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/statut",
+            json={"statut": "refusee", "motif": "Dossier non complété."},
+        )
+        assert refused.status_code == 200
+        reopened = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/statut",
+            json={"statut": "recue", "motif": "Le candidat revient avec un nouveau dossier."},
+        )
+        assert reopened.status_code == 200
+
+        history = owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}/historique"
+        )
+        assert [event["nouveau_statut"] for event in history.json()] == [
+            "recue",
+            "a_completer",
+            "refusee",
+            "recue",
+        ]

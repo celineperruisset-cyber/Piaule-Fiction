@@ -227,6 +227,35 @@ ApplicationStatus = Literal[
     "retiree",
 ]
 
+APPLICATION_STATUS_VALUES = {
+    "recue",
+    "a_completer",
+    "en_verification",
+    "prete",
+    "visite_proposee",
+    "visite_confirmee",
+    "retenue",
+    "refusee",
+    "retiree",
+}
+APPLICATION_READY_STATUSES = {
+    "prete",
+    "visite_proposee",
+    "visite_confirmee",
+    "retenue",
+}
+APPLICATION_STATUS_TRANSITIONS = {
+    "recue": {"a_completer", "en_verification", "prete", "refusee", "retiree"},
+    "a_completer": {"recue", "en_verification", "prete", "refusee", "retiree"},
+    "en_verification": {"recue", "a_completer", "prete", "refusee", "retiree"},
+    "prete": {"a_completer", "en_verification", "visite_proposee", "refusee", "retiree"},
+    "visite_proposee": {"prete", "visite_confirmee", "refusee", "retiree"},
+    "visite_confirmee": {"visite_proposee", "retenue", "refusee", "retiree"},
+    "retenue": {"refusee", "retiree"},
+    "refusee": {"recue", "retiree"},
+    "retiree": {"recue"},
+}
+
 
 class OwnerApplicationCreate(BaseModel):
     lot_id: str | None = None
@@ -252,6 +281,11 @@ class OwnerApplicationUpdate(BaseModel):
     notes_privees: str | None = Field(default=None, max_length=3000)
 
 
+class ApplicationStatusUpdate(BaseModel):
+    statut: ApplicationStatus
+    motif: str = Field(default="", max_length=1000)
+
+
 class OwnerApplication(BaseModel):
     id: str
     workspace_id: str
@@ -266,10 +300,22 @@ class OwnerApplication(BaseModel):
     source: str
     reference_source: str
     statut: ApplicationStatus
+    statut_motif: str = ""
+    statut_source: str = "proprietaire"
     doublon_possible: bool = False
     notes_privees: str
     recue_le: str
     updated_at: str
+
+
+class ApplicationStatusEvent(BaseModel):
+    id: str
+    candidature_id: str
+    ancien_statut: str
+    nouveau_statut: ApplicationStatus
+    source: str
+    motif: str
+    created_at: str
 
 
 class ApplicationChannelCreate(BaseModel):
@@ -740,6 +786,8 @@ def _ensure_database() -> None:
                 source TEXT NOT NULL,
                 reference_source TEXT NOT NULL DEFAULT '',
                 statut TEXT NOT NULL,
+                statut_motif TEXT NOT NULL DEFAULT '',
+                statut_source TEXT NOT NULL DEFAULT 'proprietaire',
                 duplicate_key TEXT NOT NULL DEFAULT '',
                 doublon_possible INTEGER NOT NULL DEFAULT 0,
                 notes_privees TEXT NOT NULL DEFAULT '',
@@ -752,6 +800,23 @@ def _ensure_database() -> None:
             CREATE INDEX IF NOT EXISTS owner_applications_workspace_idx ON owner_applications(workspace_id);
             CREATE INDEX IF NOT EXISTS owner_applications_property_idx ON owner_applications(property_id);
             CREATE INDEX IF NOT EXISTS owner_applications_duplicate_idx ON owner_applications(duplicate_key);
+            CREATE TABLE IF NOT EXISTS application_status_history (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                previous_status TEXT NOT NULL DEFAULT '',
+                new_status TEXT NOT NULL,
+                source TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS application_status_history_application_idx ON application_status_history(application_id, created_at);
+            CREATE INDEX IF NOT EXISTS application_status_history_workspace_idx ON application_status_history(workspace_id, created_at);
             CREATE TABLE IF NOT EXISTS application_channels (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -1023,6 +1088,11 @@ def _ensure_database() -> None:
             ("tantiemes_generaux", "REAL"),
         ):
             _ensure_column(connection, "lots", column, definition)
+        for column, definition in (
+            ("statut_motif", "TEXT NOT NULL DEFAULT ''"),
+            ("statut_source", "TEXT NOT NULL DEFAULT 'proprietaire'"),
+        ):
+            _ensure_column(connection, "owner_applications", column, definition)
         for column, definition in (
             ("attempts", "INTEGER NOT NULL DEFAULT 0"),
             ("sent_at", "TEXT"),
@@ -1366,6 +1436,8 @@ def _application_from_row(row: sqlite3.Row) -> OwnerApplication:
         source=row["source"],
         reference_source=row["reference_source"],
         statut=row["statut"],
+        statut_motif=row["statut_motif"],
+        statut_source=row["statut_source"],
         doublon_possible=bool(row["doublon_possible"]),
         notes_privees=row["notes_privees"],
         recue_le=row["recue_le"],
@@ -1392,6 +1464,123 @@ def _owned_application_row(
     if row is None:
         raise HTTPException(status_code=404, detail="Candidature introuvable dans ce workspace.")
     return row
+
+
+def _record_application_status_event(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    application_id: str,
+    property_id: str,
+    previous_status: str,
+    new_status: str,
+    source: str,
+    reason: str = "",
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO application_status_history(
+            id, workspace_id, application_id, property_id, previous_status,
+            new_status, source, reason, metadata_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', datetime('now'))
+        """,
+        (
+            f"application-status-{uuid4().hex[:16]}",
+            workspace_id,
+            application_id,
+            property_id,
+            previous_status,
+            new_status,
+            source,
+            _clean_text(reason, 1000),
+        ),
+    )
+
+
+def _set_application_status(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    application_id: str,
+    new_status: str,
+    source: str,
+    reason: str = "",
+) -> sqlite3.Row:
+    if new_status not in APPLICATION_STATUS_VALUES:
+        raise HTTPException(status_code=422, detail="Statut de candidature inconnu.")
+    current = connection.execute(
+        """
+        SELECT id, workspace_id, property_id, statut
+        FROM owner_applications
+        WHERE id = ? AND workspace_id = ?
+        """,
+        (application_id, workspace_id),
+    ).fetchone()
+    if current is None:
+        raise HTTPException(status_code=404, detail="Candidature introuvable.")
+    previous_status = current["statut"]
+    if previous_status == new_status:
+        if reason:
+            connection.execute(
+                """
+                UPDATE owner_applications
+                SET statut_motif = ?, statut_source = ?, updated_at = datetime('now')
+                WHERE id = ? AND workspace_id = ?
+                """,
+                (_clean_text(reason, 1000), source, application_id, workspace_id),
+            )
+        return connection.execute(
+            "SELECT * FROM owner_applications WHERE id = ? AND workspace_id = ?",
+            (application_id, workspace_id),
+        ).fetchone()
+    allowed = APPLICATION_STATUS_TRANSITIONS.get(previous_status, set())
+    if new_status not in allowed:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Transition impossible : {previous_status} vers {new_status}.",
+        )
+    if new_status in APPLICATION_READY_STATUSES:
+        completeness = _application_completeness(connection, workspace_id, application_id)
+        if completeness.statut != "complet":
+            raise HTTPException(
+                status_code=409,
+                detail="Cette candidature doit être complète avant de passer à cette étape.",
+            )
+    clean_reason = _clean_text(reason, 1000)
+    connection.execute(
+        """
+        UPDATE owner_applications
+        SET statut = ?, statut_motif = ?, statut_source = ?, updated_at = datetime('now')
+        WHERE id = ? AND workspace_id = ?
+        """,
+        (new_status, clean_reason, source, application_id, workspace_id),
+    )
+    _record_application_status_event(
+        connection,
+        workspace_id=workspace_id,
+        application_id=application_id,
+        property_id=current["property_id"],
+        previous_status=previous_status,
+        new_status=new_status,
+        source=source,
+        reason=clean_reason,
+    )
+    return connection.execute(
+        "SELECT * FROM owner_applications WHERE id = ? AND workspace_id = ?",
+        (application_id, workspace_id),
+    ).fetchone()
+
+
+def _application_status_event_from_row(row: sqlite3.Row) -> ApplicationStatusEvent:
+    return ApplicationStatusEvent(
+        id=row["id"],
+        candidature_id=row["application_id"],
+        ancien_statut=row["previous_status"],
+        nouveau_statut=row["new_status"],
+        source=row["source"],
+        motif=row["reason"],
+        created_at=row["created_at"],
+    )
 
 
 def _clean_application_create(payload: OwnerApplicationCreate) -> OwnerApplicationCreate:
@@ -1839,15 +2028,19 @@ def _refresh_application_status(
         "en_verification": "en_verification",
         "a_completer": "a_completer",
     }[completeness.statut]
-    connection.execute(
-        """
-        UPDATE owner_applications
-        SET statut = ?, updated_at = datetime('now')
-        WHERE id = ? AND workspace_id = ?
-          AND statut IN ('recue', 'a_completer', 'en_verification', 'prete')
-        """,
-        (new_status, application_id, workspace_id),
-    )
+    current = connection.execute(
+        "SELECT statut FROM owner_applications WHERE id = ? AND workspace_id = ?",
+        (application_id, workspace_id),
+    ).fetchone()
+    if current is not None and current["statut"] in {"recue", "a_completer", "en_verification", "prete"}:
+        _set_application_status(
+            connection,
+            workspace_id=workspace_id,
+            application_id=application_id,
+            new_status=new_status,
+            source="systeme",
+            reason=f"Complétude recalculée : {completeness.statut}.",
+        )
     return completeness
 
 
@@ -3605,9 +3798,13 @@ def dossier_facile_callback(
             ),
         )
         if application_status:
-            connection.execute(
-                "UPDATE owner_applications SET statut = ?, updated_at = datetime('now') WHERE id = ?",
-                (application_status, row["application_id"]),
+            _set_application_status(
+                connection,
+                workspace_id=row["workspace_id"],
+                application_id=row["application_id"],
+                new_status=application_status,
+                source="systeme",
+                reason=f"Mise à jour DossierFacile : {connection_status}.",
             )
         connection.commit()
 
@@ -3700,9 +3897,13 @@ def dossier_facile_webhook(
         else:
             application_status = None
         if application_status:
-            connection.execute(
-                "UPDATE owner_applications SET statut = ?, updated_at = datetime('now') WHERE id = ?",
-                (application_status, row["application_id"]),
+            _set_application_status(
+                connection,
+                workspace_id=row["workspace_id"],
+                application_id=row["application_id"],
+                new_status=application_status,
+                source="systeme",
+                reason=f"Événement DossierFacile : {event or dossier_status}.",
             )
         connection.commit()
     return {"ok": True, "connection_id": row["id"], "statut": connection_status}
@@ -4271,8 +4472,9 @@ def create_property_application(
             INSERT INTO owner_applications(
                 id, workspace_id, property_id, lot_id, candidat_prenom, candidat_nom,
                 candidat_email, candidat_telephone, source, reference_source, statut,
-                duplicate_key, doublon_possible, notes_privees, recue_le, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                statut_motif, statut_source, duplicate_key, doublon_possible,
+                notes_privees, recue_le, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'proprietaire', ?, ?, ?, datetime('now'), datetime('now'))
             """,
             (
                 application_id,
@@ -4290,6 +4492,16 @@ def create_property_application(
                 int(duplicate),
                 cleaned.notes_privees,
             ),
+        )
+        _record_application_status_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            application_id=application_id,
+            property_id=property_id,
+            previous_status="",
+            new_status=cleaned.statut,
+            source="proprietaire",
+            reason="Candidature créée.",
         )
         if existing is not None:
             connection.execute(
@@ -4316,6 +4528,57 @@ def get_property_application(
         ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Candidature introuvable dans ce bien.")
+    return _application_from_row(row)
+
+
+@app.get(
+    "/api/biens/{property_id}/candidatures/{application_id}/historique",
+    response_model=list[ApplicationStatusEvent],
+)
+def list_application_status_history(
+    property_id: str,
+    application_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> list[ApplicationStatusEvent]:
+    """Return the explainable status history of one application."""
+
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        rows = connection.execute(
+            """
+            SELECT * FROM application_status_history
+            WHERE workspace_id = ? AND property_id = ? AND application_id = ?
+            ORDER BY rowid
+            """,
+            (owner.workspace_id, property_id, application_id),
+        ).fetchall()
+    return [_application_status_event_from_row(row) for row in rows]
+
+
+@app.post(
+    "/api/biens/{property_id}/candidatures/{application_id}/statut",
+    response_model=OwnerApplication,
+)
+def transition_application_status(
+    property_id: str,
+    application_id: str,
+    payload: ApplicationStatusUpdate,
+    owner: Candidate = Depends(current_candidate),
+) -> OwnerApplication:
+    """Apply one owner-approved transition and record its reason."""
+
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        row = _set_application_status(
+            connection,
+            workspace_id=owner.workspace_id,
+            application_id=application_id,
+            new_status=payload.statut,
+            source="proprietaire",
+            reason=payload.motif,
+        )
+        connection.commit()
+        row = _owned_application_row(connection, owner, application_id)
     return _application_from_row(row)
 
 
@@ -4376,7 +4639,7 @@ def update_property_application(
                 candidat_telephone,
                 source,
                 reference_source,
-                statut,
+                current["statut"],
                 duplicate_key,
                 int(duplicate or bool(current["doublon_possible"])),
                 notes_privees,
@@ -4389,6 +4652,14 @@ def update_property_application(
             connection.execute(
                 "UPDATE owner_applications SET doublon_possible = 1 WHERE workspace_id = ? AND duplicate_key = ?",
                 (owner.workspace_id, duplicate_key),
+            )
+        if cleaned.statut is not None:
+            _set_application_status(
+                connection,
+                workspace_id=owner.workspace_id,
+                application_id=application_id,
+                new_status=cleaned.statut,
+                source="proprietaire",
             )
         connection.commit()
         row = _owned_application_row(connection, owner, application_id)
