@@ -27,4 +27,6 @@ La connexion Google utilise OpenID Connect avec les scopes `openid email profile
 
 La récupération de compte utilise `POST /api/mot-de-passe-oublie` puis `POST /api/mot-de-passe-reinitialiser`. Le prénom peut servir de vérification complémentaire, mais le secret de récupération doit être transmis par e-mail et reste valable quinze minutes. L’envoi SMTP réel sera branché avant la production ; `PIAULE_EXPOSE_DEV_RESET_TOKEN` est réservé aux tests locaux.
 
+Une récupération par SMS est prévue après ce socle. Elle devra utiliser un numéro vérifié, un fournisseur SMS, un code à usage unique expirant rapidement, des limites anti-abus et un audit. Elle ne remplace pas encore le parcours e-mail actuel.
+
 La base `.local-state/` et les uploads privés ne doivent jamais être versionnés. Aucun connecteur réel, message, publication, signature ou paiement ne doit être activé avant d’avoir une permission explicite, une file de validation et un audit.

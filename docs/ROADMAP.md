@@ -29,6 +29,7 @@ Les connecteurs de portails doivent être officiels ou explicitement autorisés.
 
 ## Après le MVP
 
+- récupération de compte par SMS sur numéro vérifié, avec code à usage unique et limites d’envoi ;
 - publication assistée avec contrats partenaires ;
 - intégration avec agences et administrateurs de biens titulaires des cartes adaptées ;
 - bail, signature et état des lieux selon le rôle juridique du partenaire ;

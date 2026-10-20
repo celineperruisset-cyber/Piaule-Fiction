@@ -17,6 +17,8 @@ Le compte sert à isoler un workspace propriétaire et les personnes expliciteme
 
 Authentification externe : `GET /api/auth/google/start` et `GET /api/auth/google/callback` utilisent Google OpenID Connect avec `openid email profile`. Aucun scope Gmail n’est demandé. Récupération de compte : `POST /api/mot-de-passe-oublie` prépare un lien à usage unique, puis `POST /api/mot-de-passe-reinitialiser` change le mot de passe et révoque les sessions.
 
+Extension prévue : récupération par SMS sur un numéro préalablement vérifié. Elle nécessitera un fournisseur SMS, un code à usage unique avec expiration, une limite de tentatives et un journal d’audit. Elle viendra après la récupération par e-mail et ne sera pas activée par défaut.
+
 ## Règles
 
 Chaque route vérifie l’identité, le workspace, le rôle et la permission. Une route de lecture ne doit jamais être utilisée pour déclencher une transmission. Les actions sensibles exigent un aperçu idempotent, une confirmation et un événement d’audit.
