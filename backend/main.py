@@ -860,6 +860,43 @@ class AgentWorkerProcessResult(BaseModel):
     message_reponse_id: str | None = None
 
 
+CalendarProvider = Literal["google", "microsoft_graph", "ics"]
+CalendarConnectionStatus = Literal["a_connecter", "active", "revoquee", "bloquee"]
+
+
+class CalendarConnectionCreate(BaseModel):
+    fournisseur: CalendarProvider
+    compte_libelle: str = Field(min_length=2, max_length=160)
+
+
+class CalendarConnection(CalendarConnectionCreate):
+    id: str
+    workspace_id: str
+    statut: CalendarConnectionStatus
+    mode: Literal["lecture_seule"] = "lecture_seule"
+    derniere_synchronisation_le: str | None = None
+    revoquee_le: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class InternalCalendarActivation(BaseModel):
+    reference_compte: str = Field(default="", max_length=500)
+
+
+class CalendarBusyPeriodCreate(BaseModel):
+    external_id: str = Field(min_length=1, max_length=300)
+    debut: str = Field(min_length=10, max_length=80)
+    fin: str = Field(min_length=10, max_length=80)
+    fuseau: str = Field(default="Europe/Paris", max_length=80)
+    titre: str = Field(default="", max_length=240)
+
+
+class InternalCalendarAvailabilitySync(BaseModel):
+    periodes_occupees: list[CalendarBusyPeriodCreate] = Field(default_factory=list, max_length=500)
+    synchronisee_le: str | None = Field(default=None, max_length=80)
+
+
 class InboundApplicationEmail(BaseModel):
     adresse_reception: str
     message_id: str = Field(min_length=1, max_length=300)
@@ -1592,6 +1629,42 @@ def _ensure_database() -> None:
             CREATE INDEX IF NOT EXISTS visits_workspace_idx ON visits(workspace_id, created_at);
             CREATE INDEX IF NOT EXISTS visits_application_idx ON visits(application_id, created_at);
             CREATE INDEX IF NOT EXISTS visits_slot_idx ON visits(slot_id, status);
+            CREATE TABLE IF NOT EXISTS calendar_connections (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                account_label TEXT NOT NULL,
+                external_account_ref_hash TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'a_connecter',
+                mode TEXT NOT NULL DEFAULT 'lecture_seule',
+                last_sync_at TEXT,
+                revoked_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(workspace_id, provider, account_label),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS calendar_connections_workspace_idx
+                ON calendar_connections(workspace_id, created_at);
+            CREATE TABLE IF NOT EXISTS calendar_busy_periods (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                external_id TEXT NOT NULL,
+                starts_at TEXT NOT NULL,
+                ends_at TEXT NOT NULL,
+                timezone TEXT NOT NULL DEFAULT 'Europe/Paris',
+                title TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(connection_id, external_id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(connection_id) REFERENCES calendar_connections(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS calendar_busy_periods_workspace_idx
+                ON calendar_busy_periods(workspace_id, starts_at, ends_at);
+            CREATE INDEX IF NOT EXISTS calendar_busy_periods_connection_idx
+                ON calendar_busy_periods(connection_id, starts_at);
             CREATE TABLE IF NOT EXISTS agent_runs (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -2422,6 +2495,33 @@ def _publication_connection_from_row(row: sqlite3.Row) -> PublicationConnection:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _calendar_connection_from_row(row: sqlite3.Row) -> CalendarConnection:
+    return CalendarConnection(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        fournisseur=row["provider"],
+        compte_libelle=row["account_label"],
+        statut=row["status"],
+        mode=row["mode"],
+        derniere_synchronisation_le=row["last_sync_at"],
+        revoquee_le=row["revoked_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _owned_calendar_connection_row(
+    connection: sqlite3.Connection, owner: Candidate, connection_id: str
+) -> sqlite3.Row:
+    row = connection.execute(
+        "SELECT * FROM calendar_connections WHERE id = ? AND workspace_id = ?",
+        (connection_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Connexion calendrier introuvable dans ce workspace.")
+    return row
 
 
 def _owned_publication_connection_row(
@@ -4644,6 +4744,226 @@ def get_publication_job(job_id: str, owner: Candidate = Depends(current_candidat
     return _publication_job_from_row(row)
 
 
+@app.get("/api/calendriers/connexions", response_model=list[CalendarConnection])
+def list_calendar_connections(owner: Candidate = Depends(current_candidate)) -> list[CalendarConnection]:
+    """List read-only calendar connections belonging to the current owner."""
+
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM calendar_connections
+            WHERE workspace_id = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (owner.workspace_id,),
+        ).fetchall()
+    return [_calendar_connection_from_row(row) for row in rows]
+
+
+@app.post("/api/calendriers/connexions", response_model=CalendarConnection, status_code=201)
+def create_calendar_connection(
+    payload: CalendarConnectionCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> CalendarConnection:
+    """Register a calendar before its official OAuth or ICS activation."""
+
+    label = _clean_text(payload.compte_libelle, 160)
+    connection_id = f"calendar-connection-{uuid4().hex[:16]}"
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        existing = connection.execute(
+            """
+            SELECT id FROM calendar_connections
+            WHERE workspace_id = ? AND provider = ? AND account_label = ?
+            """,
+            (owner.workspace_id, payload.fournisseur, label),
+        ).fetchone()
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="Ce calendrier est déjà enregistré.")
+        connection.execute(
+            """
+            INSERT INTO calendar_connections(
+                id, workspace_id, provider, account_label, status, mode,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'a_connecter', 'lecture_seule', ?, ?)
+            """,
+            (connection_id, owner.workspace_id, payload.fournisseur, label, now, now),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="connexion_calendrier_preparee",
+            entity_type="calendar_connection",
+            entity_id=connection_id,
+            metadata={"fournisseur": payload.fournisseur, "compte_libelle": label},
+        )
+        connection.commit()
+        row = _owned_calendar_connection_row(connection, owner, connection_id)
+    return _calendar_connection_from_row(row)
+
+
+@app.post("/api/internal/calendriers/connexions/{connection_id}/activer", response_model=CalendarConnection)
+def activate_calendar_connection(
+    connection_id: str,
+    payload: InternalCalendarActivation,
+    request: Request,
+) -> CalendarConnection:
+    """Activate a calendar after an official provider handshake."""
+
+    _agent_internal_auth(request)
+    now = _iso_now()
+    reference = _clean_text(payload.reference_compte, 500)
+    reference_hash = hashlib.sha256(reference.encode("utf-8")).hexdigest() if reference else ""
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT * FROM calendar_connections WHERE id = ?", (connection_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Connexion calendrier introuvable.")
+        connection.execute(
+            """
+            UPDATE calendar_connections
+            SET status = 'active', external_account_ref_hash = ?, revoked_at = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (reference_hash, now, connection_id),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=row["workspace_id"],
+            actor_type="agent",
+            actor_id="calendar-connector",
+            event_name="connexion_calendrier_activee",
+            entity_type="calendar_connection",
+            entity_id=connection_id,
+            metadata={"reference_compte_hash": reference_hash},
+        )
+        connection.commit()
+        updated = connection.execute(
+            "SELECT * FROM calendar_connections WHERE id = ?", (connection_id,)
+        ).fetchone()
+    return _calendar_connection_from_row(updated)
+
+
+@app.post("/api/calendriers/connexions/{connection_id}/revoquer", response_model=CalendarConnection)
+def revoke_calendar_connection(
+    connection_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> CalendarConnection:
+    """Revoke a calendar and stop using its synchronized busy periods."""
+
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        row = _owned_calendar_connection_row(connection, owner, connection_id)
+        connection.execute(
+            """
+            UPDATE calendar_connections
+            SET status = 'revoquee', revoked_at = ?, updated_at = ?
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (now, now, connection_id, owner.workspace_id),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="connexion_calendrier_revoquee",
+            entity_type="calendar_connection",
+            entity_id=connection_id,
+            metadata={"fournisseur": row["provider"]},
+        )
+        connection.commit()
+        updated = _owned_calendar_connection_row(connection, owner, connection_id)
+    return _calendar_connection_from_row(updated)
+
+
+@app.post("/api/internal/calendriers/connexions/{connection_id}/synchroniser", response_model=CalendarConnection)
+def sync_calendar_busy_periods(
+    connection_id: str,
+    payload: InternalCalendarAvailabilitySync,
+    request: Request,
+) -> CalendarConnection:
+    """Store a normalized read-only calendar snapshot from an authorized connector."""
+
+    _agent_internal_auth(request)
+    now = _iso_now()
+    synchronized_at = _clean_text(payload.synchronisee_le, 80) or now
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT * FROM calendar_connections WHERE id = ?", (connection_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Connexion calendrier introuvable.")
+        if row["status"] != "active":
+            raise HTTPException(status_code=409, detail="La connexion calendrier n'est pas active.")
+        normalized_periods: list[tuple[CalendarBusyPeriodCreate, str, str]] = []
+        for period in payload.periodes_occupees:
+            starts_at = _parse_visit_datetime(period.debut, "debut")
+            ends_at = _parse_visit_datetime(period.fin, "fin")
+            if ends_at <= starts_at:
+                raise HTTPException(status_code=422, detail="Une période calendrier doit avoir une fin après son début.")
+            normalized_periods.append((period, starts_at, ends_at))
+        keep_ids = [period.external_id for period, _, _ in normalized_periods]
+        if keep_ids:
+            placeholders = ",".join("?" for _ in keep_ids)
+            connection.execute(
+                f"DELETE FROM calendar_busy_periods WHERE connection_id = ? AND external_id NOT IN ({placeholders})",
+                [connection_id, *keep_ids],
+            )
+        else:
+            connection.execute("DELETE FROM calendar_busy_periods WHERE connection_id = ?", (connection_id,))
+        for period, starts_at, ends_at in normalized_periods:
+            period_id = f"calendar-busy-{uuid4().hex[:16]}"
+            connection.execute(
+                """
+                INSERT INTO calendar_busy_periods(
+                    id, workspace_id, connection_id, external_id, starts_at, ends_at,
+                    timezone, title, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(connection_id, external_id) DO UPDATE SET
+                    starts_at = excluded.starts_at,
+                    ends_at = excluded.ends_at,
+                    timezone = excluded.timezone,
+                    title = excluded.title,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    period_id,
+                    row["workspace_id"],
+                    connection_id,
+                    _clean_text(period.external_id, 300),
+                    starts_at,
+                    ends_at,
+                    _clean_text(period.fuseau, 80),
+                    _clean_text(period.titre, 240),
+                    now,
+                    now,
+                ),
+            )
+        connection.execute(
+            "UPDATE calendar_connections SET last_sync_at = ?, updated_at = ? WHERE id = ?",
+            (synchronized_at, now, connection_id),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=row["workspace_id"],
+            actor_type="agent",
+            actor_id="calendar-connector",
+            event_name="calendrier_synchronise",
+            entity_type="calendar_connection",
+            entity_id=connection_id,
+            metadata={"periodes_occupees": len(payload.periodes_occupees), "synchronisee_le": synchronized_at},
+        )
+        connection.commit()
+        updated = connection.execute(
+            "SELECT * FROM calendar_connections WHERE id = ?", (connection_id,)
+        ).fetchone()
+    return _calendar_connection_from_row(updated)
+
+
 @app.post("/api/internal/diffusion/publications", response_model=PublicationJob, status_code=201)
 def create_publication_job(
     payload: InternalPublicationJobCreate,
@@ -4908,6 +5228,106 @@ def process_next_agent_run(request: Request) -> AgentWorkerProcessResult:
         statut="completed",
         missions_enfants=child_ids,
         message_reponse_id=response_message_id,
+    )
+
+
+@app.post("/api/internal/agent-runs/process-next-completude", response_model=AgentWorkerProcessResult)
+def process_next_completeness_run(request: Request) -> AgentWorkerProcessResult:
+    """Execute one queued completeness mission and queue the candidate e-mail."""
+
+    _agent_internal_auth(request)
+    with closing(_connect()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            """
+            SELECT * FROM agent_runs
+            WHERE status = 'queued' AND agent_type = 'agent-completude'
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            connection.commit()
+            return AgentWorkerProcessResult(traite=False)
+        now = _iso_now()
+        connection.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'running', started_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'queued'
+            """,
+            (now, now, row["id"]),
+        )
+        connection.commit()
+
+    input_data = json.loads(row["input_json"] or "{}")
+    property_id = str(input_data.get("property_id") or input_data.get("bien_id") or "").strip()
+    application_id = str(input_data.get("application_id") or input_data.get("candidature_id") or row["target_id"] or "").strip()
+    worker_owner = Candidate(prenom="Agent Complétude", email="agent-completude@internal", workspace_id=row["workspace_id"])
+    followup: CandidateCompletenessFollowUp | None = None
+    error = ""
+    try:
+        if not property_id or not application_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Une mission de complétude doit indiquer property_id et application_id.",
+            )
+        followup = agent_request_missing_documents(property_id, application_id, worker_owner)
+    except HTTPException as exc:
+        error = str(exc.detail)
+    except Exception as exc:  # pragma: no cover - defensive worker boundary
+        error = str(exc)
+
+    now = _iso_now()
+    status_value: AgentRunStatus = "failed" if error else "completed"
+    output: dict[str, object] = {
+        "mode": "worker_completude",
+        "property_id": property_id,
+        "application_id": application_id,
+    }
+    if followup is not None:
+        output["followup"] = json.loads(followup.model_dump_json())
+    if error:
+        output["erreur"] = error
+    with closing(_connect()) as connection:
+        connection.execute(
+            """
+            UPDATE agent_runs
+            SET status = ?, output_json = ?, evidence_json = ?, error = ?,
+                finished_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'running'
+            """,
+            (
+                status_value,
+                _json_object(output, label="La sortie de l'Agent Complétude"),
+                _json_object(
+                    [{"type": "candidate_followup", "message_id": followup.message_id if followup else None}],
+                    label="Les preuves de la mission de complétude",
+                ),
+                _clean_text(error, 4000),
+                now,
+                now,
+                row["id"],
+            ),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=row["workspace_id"],
+            actor_type="agent",
+            actor_id="agent-completude",
+            event_name="mission_completude_executee" if not error else "mission_completude_echouee",
+            entity_type="agent_run",
+            entity_id=row["id"],
+            application_id=application_id or None,
+            property_id=property_id or None,
+            metadata={"statut": status_value, "message_id": followup.message_id if followup else None, "erreur": error},
+        )
+        connection.commit()
+    return AgentWorkerProcessResult(
+        traite=True,
+        run_id=row["id"],
+        statut=status_value,
+        message_reponse_id=followup.message_id if followup else None,
     )
 
 
@@ -5982,6 +6402,19 @@ def create_visit_slot(
         ).fetchone()
         if overlap is not None:
             raise HTTPException(status_code=409, detail="Ce créneau chevauche déjà une disponibilité.")
+        external_conflict = connection.execute(
+            """
+            SELECT bp.id
+            FROM calendar_busy_periods bp
+            JOIN calendar_connections cc ON cc.id = bp.connection_id
+            WHERE bp.workspace_id = ? AND cc.status = 'active'
+              AND bp.starts_at < ? AND bp.ends_at > ?
+            LIMIT 1
+            """,
+            (owner.workspace_id, end, start),
+        ).fetchone()
+        if external_conflict is not None:
+            raise HTTPException(status_code=409, detail="Ce créneau chevauche une indisponibilité du calendrier connecté.")
         connection.execute(
             """
             INSERT INTO visit_slots(
@@ -6041,6 +6474,19 @@ def propose_application_visit(
             raise HTTPException(status_code=409, detail="Ce créneau n'est plus disponible.")
         if slot["lot_id"] and slot["lot_id"] != application["lot_id"]:
             raise HTTPException(status_code=409, detail="Ce créneau ne correspond pas au lot de la candidature.")
+        external_conflict = connection.execute(
+            """
+            SELECT bp.id
+            FROM calendar_busy_periods bp
+            JOIN calendar_connections cc ON cc.id = bp.connection_id
+            WHERE bp.workspace_id = ? AND cc.status = 'active'
+              AND bp.starts_at < ? AND bp.ends_at > ?
+            LIMIT 1
+            """,
+            (owner.workspace_id, slot["ends_at"], slot["starts_at"]),
+        ).fetchone()
+        if external_conflict is not None:
+            raise HTTPException(status_code=409, detail="Ce créneau chevauche une indisponibilité du calendrier connecté.")
         existing = connection.execute(
             """
             SELECT id FROM visits

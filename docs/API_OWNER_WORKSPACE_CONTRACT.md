@@ -34,7 +34,7 @@ Le propriétaire consulte l'équipe avec `GET /api/agents`. L'Orchestrateur est 
 - `GET /api/agents/orchestrateur/messages` relit les demandes et réponses ;
 - `GET /api/agents/{agent_id}` affiche un agent et son contrat de son propre workspace.
 
-Une demande est conservée dans `agent_messages`, rattachée à `agent_runs` et auditée. Le worker interne `POST /api/internal/agent-runs/process-next` consomme une mission Orchestrateur et crée des sous-missions spécialisées avec un routage déterministe. Cette première version ne fabrique pas de réponse LLM et n'exécute aucun effet externe ; elle prépare la file de travail et écrit une réponse d'état. Le fournisseur LLM et les workers spécialisés devront respecter ces contrats avant d'être activés.
+Une demande est conservée dans `agent_messages`, rattachée à `agent_runs` et auditée. Le worker interne `POST /api/internal/agent-runs/process-next` consomme une mission Orchestrateur et crée des sous-missions spécialisées avec un routage déterministe. Le worker `POST /api/internal/agent-runs/process-next-completude` exécute désormais la première mission spécialisée : il calcule les pièces manquantes et met en file un message ciblé au candidat avec un lien valable trente jours. L'envoi matériel reste effectué par le worker SMTP, après passage par la boîte de sortie. Le fournisseur LLM et les autres workers spécialisés devront respecter ces contrats avant d'être activés.
 
 ## Publication et autorisation d'un compte propriétaire
 
@@ -99,7 +99,7 @@ Les contrats v1 suivent les décisions du produit :
 2. L'Agent Diffusion attend une première validation et exécution du propriétaire. Les publications suivantes suivent le paramètre du compte : automatique si le propriétaire l'a autorisé, validation systématique sinon.
 3. L'Agent Comparaison prépare une shortlist expliquée. Le propriétaire décide toujours de retenir ou refuser.
 4. L'Agent Confiance peut préparer une vérification officielle, mais elle ne démarre qu'après le consentement du candidat et le retour d'un connecteur reconnu.
-5. L'Agent Visites peut lire les créneaux internes et proposera ensuite des créneaux issus de Google ou Outlook lorsque le propriétaire aura connecté son calendrier. Il ne confirme pas une décision de location.
+5. L'Agent Visites peut lire les créneaux internes et les périodes occupées synchronisées en lecture seule depuis Google ou Outlook. Il ne confirme pas une décision de location.
 6. Le propriétaire garde la décision finale pour le refus, la sélection, la signature, le paiement, la suppression définitive et toute action réglementée.
 
 ## Biens et lots disponibles
@@ -207,6 +207,15 @@ Le propriétaire peut créer des créneaux de visite indépendants d’un calend
 - `POST /api/biens/{id}/visites/{visit_id}/annuler` pour libérer un créneau avec un motif.
 
 Une proposition est créée avec le statut `proposee` et réserve immédiatement le créneau. Le backend refuse une candidature incomplète, un créneau déjà réservé, un chevauchement de disponibilités ou un créneau associé à un autre lot. La proposition ne déclenche encore aucun e-mail, SMS ou invitation de calendrier : ces transmissions seront des actions de connecteur séparées et journalisées.
+
+Les calendriers externes sont préparés derrière un connecteur officiel :
+
+- `GET/POST /api/calendriers/connexions` pour enregistrer un calendrier du workspace en statut `a_connecter` ;
+- `POST /api/internal/calendriers/connexions/{id}/activer` après le handshake OAuth ou ICS, sans stocker le jeton dans cette API ;
+- `POST /api/internal/calendriers/connexions/{id}/synchroniser` pour remplacer l'instantané des périodes occupées, normalisées en UTC ;
+- `POST /api/calendriers/connexions/{id}/revoquer` pour arrêter leur prise en compte.
+
+Une période d'un calendrier actif bloque la création et la proposition d'un créneau qui la chevauche. La connexion réelle à Google Calendar ou Microsoft Graph reste la prochaine étape du connecteur ; ces routes constituent la frontière de données et de permissions sur laquelle il pourra s'appuyer.
 
 Depuis son lien temporaire, le candidat peut consulter et répondre à ses propres propositions avec :
 

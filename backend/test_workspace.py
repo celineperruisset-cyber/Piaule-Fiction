@@ -309,6 +309,166 @@ def test_publication_job_requires_first_owner_validation_then_allows_automatic_m
         assert owner.get(f"/api/diffusion/publications/{second_job.json()['id']}").json()["statut"] == "publiee"
 
 
+def test_completeness_worker_queues_direct_candidate_email_for_missing_documents():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.AGENT_INTERNAL_TOKEN = "agent-test-token"
+        main.CANDIDATE_PORTAL_BASE_URL = "https://piaulefiction.fr/candidature.html"
+        owner = TestClient(main.app)
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "completeness-worker@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert created.status_code == 200
+        workspace_id = created.json()["workspace_id"]
+
+        property_response = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Appartement dossier",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue des pièces",
+                "ville": "Lyon",
+            },
+        )
+        assert property_response.status_code == 201
+        property_id = property_response.json()["id"]
+        application = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Test",
+                "candidat_email": "alex@example.test",
+            },
+        )
+        assert application.status_code == 201
+        application_id = application.json()["id"]
+
+        run = owner.post(
+            "/api/internal/agent-runs",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={
+                "workspace_id": workspace_id,
+                "type_agent": "agent-completude",
+                "mission": "Demander les pièces manquantes au candidat",
+                "cible_type": "candidature",
+                "cible_id": application_id,
+                "entree": {"property_id": property_id, "application_id": application_id},
+            },
+        )
+        assert run.status_code == 201
+
+        processed = owner.post(
+            "/api/internal/agent-runs/process-next-completude",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+        )
+        assert processed.status_code == 200
+        assert processed.json()["statut"] == "completed"
+        assert processed.json()["message_reponse_id"]
+
+        messages = owner.get(f"/api/biens/{property_id}/candidatures/{application_id}/messages")
+        assert messages.status_code == 200
+        outgoing = [message for message in messages.json() if message["direction"] == "sortant"]
+        assert len(outgoing) == 1
+        assert outgoing[0]["statut"] == "a_envoyer"
+        assert "https://piaulefiction.fr/candidature.html?access=" in outgoing[0]["contenu"]
+
+        run_state = owner.get(f"/api/agent-runs/{run.json()['id']}")
+        assert run_state.status_code == 200
+        assert run_state.json()["statut"] == "completed"
+        assert run_state.json()["sortie"]["followup"]["pieces_demandees"]
+
+
+def test_calendar_connection_sync_blocks_conflicting_visit_slot():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.AGENT_INTERNAL_TOKEN = "agent-test-token"
+        owner = TestClient(main.app)
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "calendar-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert created.status_code == 200
+        workspace_id = created.json()["workspace_id"]
+
+        property_response = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Appartement calendrier",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue du calendrier",
+                "ville": "Lyon",
+            },
+        )
+        assert property_response.status_code == 201
+        property_id = property_response.json()["id"]
+        calendar = owner.post(
+            "/api/calendriers/connexions",
+            json={"fournisseur": "microsoft_graph", "compte_libelle": "Outlook propriétaire"},
+        )
+        assert calendar.status_code == 201
+        connection_id = calendar.json()["id"]
+        activated = owner.post(
+            f"/api/internal/calendriers/connexions/{connection_id}/activer",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={"reference_compte": "outlook-account-ref"},
+        )
+        assert activated.status_code == 200
+
+        synced = owner.post(
+            f"/api/internal/calendriers/connexions/{connection_id}/synchroniser",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={
+                "periodes_occupees": [
+                    {
+                        "external_id": "outlook-event-1",
+                        "debut": "2026-10-21T18:00:00+02:00",
+                        "fin": "2026-10-21T19:00:00+02:00",
+                        "titre": "Indisponible",
+                    }
+                ]
+            },
+        )
+        assert synced.status_code == 200
+        assert synced.json()["derniere_synchronisation_le"]
+
+        slot = owner.post(
+            f"/api/biens/{property_id}/visite-creneaux",
+            json={
+                "debut": "2026-10-21T18:30:00+02:00",
+                "fin": "2026-10-21T19:30:00+02:00",
+            },
+        )
+        assert slot.status_code == 409, slot.text
+        assert owner.get("/api/calendriers/connexions").json()[0]["statut"] == "active"
+
+        revoked = owner.post(f"/api/calendriers/connexions/{connection_id}/revoquer")
+        assert revoked.status_code == 200
+        assert revoked.json()["statut"] == "revoquee"
+        available_after_revoke = owner.post(
+            f"/api/biens/{property_id}/visite-creneaux",
+            json={
+                "debut": "2026-10-21T18:30:00+02:00",
+                "fin": "2026-10-21T19:30:00+02:00",
+            },
+        )
+        assert available_after_revoke.status_code == 201
+
+
 def test_publication_auto_requires_first_approved_publication_and_can_be_revoked():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
