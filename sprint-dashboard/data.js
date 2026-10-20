@@ -29,7 +29,7 @@ const initialTaskStatuses = {
   "candidate-1": "done",
   "document-1": "done",
   "agent-1": "todo",
-  "validation-1": "todo",
+  "validation-1": "done",
   "visit-1": "done",
   "source-1": "doing",
   "launch-1": "todo"
@@ -44,10 +44,10 @@ const initialObjectiveStatuses = {
   "objective-completeness": "done",
   "objective-comparison": "todo",
   "objective-agents": "doing",
-  "objective-validation": "todo",
+  "objective-validation": "doing",
   "objective-visits": "doing",
   "objective-connectors": "todo",
-  "objective-audit": "todo",
+  "objective-audit": "doing",
   "objective-regulatory": "doing",
   "objective-partners": "todo",
   "objective-payments": "todo",
@@ -69,7 +69,7 @@ const projectStreams = [
   { id: "stream-workspace", title: "Workspace de gestion", label: "Une vue claire pour chaque bien", status: "doing", color: "blue", now: "La nouvelle architecture fonctionnelle est définie dans la documentation.", next: "Remplacer la prévisualisation candidat par une prévisualisation propriétaire interactive.", proof: "Un propriétaire peut passer d'un bien à ses dossiers et ses prochaines actions." },
   { id: "stream-dossiers", title: "Dossiers candidats", label: "Lire sans perdre le contexte", status: "doing", color: "teal", now: "Les candidatures, pièces, complétude et demandes ciblées sont persistées côté backend.", next: "Relier le coffre et les contrôles au frontend propriétaire.", proof: "Une pièce reçue est rattachée au bon dossier et son état est explicable." },
   { id: "stream-agents", title: "Agents de gestion", label: "Une équipe, pas un chatbot", status: "doing", color: "orange", now: "Les rôles Bien, Dossier, Cohérence, Comparaison, Rendez-vous et Suivi sont cadrés.", next: "Écrire les contrats d'entrée, sortie, permissions et escalades.", proof: "Chaque agent produit une proposition vérifiable et une prochaine action." },
-  { id: "stream-backend", title: "Backend workspace", label: "Une mémoire fiable des biens", status: "doing", color: "pink", now: "Le backend persiste le workspace, les biens, lots, candidatures, pièces, vérifications et visites.", next: "Construire les actions, validations, audit et orchestrations d’agents.", proof: "Le frontend et les agents lisent la même source de vérité par propriétaire." },
+  { id: "stream-backend", title: "Backend workspace", label: "Une mémoire fiable des biens", status: "doing", color: "pink", now: "Le backend persiste le workspace, les biens, lots, candidatures, pièces, vérifications, visites, actions et audit.", next: "Relier la file d’actions au frontend et écrire les contrats d’orchestration des agents.", proof: "Le frontend et les agents lisent la même source de vérité par propriétaire." },
   { id: "stream-connectors", title: "Connecteurs autorisés", label: "Brancher les bons canaux", status: "todo", color: "purple", now: "Les portails et logiciels partenaires doivent être étudiés séparément.", next: "Documenter API, flux, permissions, coût et droits de publication avant chaque adaptateur.", proof: "Aucun connecteur n'utilise un compte tiers ou un accès non autorisé." },
   { id: "stream-boundary", title: "Cadre et partenaires", label: "Rester un logiciel clair", status: "doing", color: "red", now: "La limite logiciel / activité immobilière est documentée.", next: "Faire valider le mode propriétaire et préparer un mode partenaire pour les actes réglementés.", proof: "Chaque écran affiche qui décide, qui envoie et qui porte l'action." },
   { id: "stream-production", title: "Déploiement et exploitation", label: "Un service fiable dans le temps", status: "todo", color: "green", now: "Le VPS existe et servira à la première version de test.", next: "Configurer HTTPS, sauvegardes, surveillance, restauration et séparation des environnements.", proof: "Une mise à jour peut être déployée et restaurée sans perdre les dossiers." }
@@ -96,7 +96,7 @@ const productObjectives = [
 ];
 
 const initialPersonalObjectiveStatuses = {
-  "personal-brief": "doing", "personal-owner-ui": "doing", "personal-domain": "done", "personal-property": "done", "personal-dossiers": "done", "personal-agents": "todo", "personal-validation": "todo", "personal-connectors": "doing", "personal-backend": "doing", "personal-legal": "doing", "personal-launch": "todo"
+  "personal-brief": "doing", "personal-owner-ui": "doing", "personal-domain": "done", "personal-property": "done", "personal-dossiers": "done", "personal-agents": "todo", "personal-validation": "doing", "personal-connectors": "doing", "personal-backend": "doing", "personal-legal": "doing", "personal-launch": "todo"
 };
 
 const personalObjectives = [
@@ -106,7 +106,7 @@ const personalObjectives = [
   { id: "personal-property", order: 4, stage: "MVP · Biens", title: "Brancher le premier bien", why: "Le bien devient le point d'entrée du travail des agents.", steps: ["Créer les tables et routes.", "Enregistrer caractéristiques et règles.", "Afficher l'activité du bien."], doneWhen: "Un bien synthétique remonte dans le dashboard propriétaire." },
   { id: "personal-dossiers", order: 5, stage: "MVP · Dossiers", title: "Boucler la complétude", why: "La valeur immédiate est de résoudre les dossiers incomplets.", steps: ["Rattacher les pièces au candidat et au bien.", "Calculer les manquants autorisés.", "Préparer une demande.", "Reprendre la vérification à réception."], doneWhen: "Une pièce reçue met à jour le bon dossier." },
   { id: "personal-agents", order: 6, stage: "MVP · Agents", title: "Écrire les contrats des agents", why: "Chaque agent doit avoir une mission et une limite lisibles.", steps: ["Définir les entrées et sorties.", "Séparer faits et recommandations.", "Ajouter preuve et escalade."], doneWhen: "Les agents produisent des propositions testables." },
-  { id: "personal-validation", order: 7, stage: "MVP · Actions", title: "Construire la file de validation", why: "Le propriétaire doit contrôler rapidement les transmissions sensibles.", steps: ["Afficher destinataire et données.", "Prévisualiser le message.", "Autoriser, refuser ou demander une modification.", "Journaliser la décision."], doneWhen: "Une action ne peut pas partir sans autorisation." },
+  { id: "personal-validation", order: 7, stage: "MVP · Actions", title: "Construire la file de validation", why: "Le propriétaire doit contrôler rapidement les transmissions sensibles.", steps: ["Afficher destinataire et données.", "Prévisualiser le message.", "Autoriser, refuser ou demander une modification.", "Journaliser la décision."], doneWhen: "Le backend bloque une action sensible jusqu'à l'autorisation et conserve la décision ; il reste à brancher l'écran." },
   { id: "personal-connectors", order: 8, stage: "Connecteurs", title: "Étudier les canaux de publication", why: "Les intégrations doivent être officielles et adaptées au rôle du produit.", steps: ["Relever API, flux et webhooks.", "Vérifier droits de publication et contrat.", "Documenter coûts, limites et révocation."], doneWhen: "Chaque connecteur possède une fiche de décision." },
   { id: "personal-backend", order: 9, stage: "Backend", title: "Faire évoluer l'API vers le workspace", why: "Le backend actuel est une base technique, mais le modèle principal doit devenir propriétaire-first.", steps: ["Ajouter propriétaire et biens.", "Ajouter candidatures, actions et validations.", "Conserver l'isolation et le stockage privé."], doneWhen: "Le premier écran propriétaire lit des données persistées." },
   { id: "personal-legal", order: 10, stage: "Cadre", title: "Faire relire la frontière", why: "Le produit doit rester un éditeur logiciel ou travailler avec un partenaire habilité.", steps: ["Lister les fonctions d'assistance.", "Isoler les actes d'entremise et de gestion.", "Demander une validation CCI ou juridique avant commercialisation."], doneWhen: "Le mode de lancement et le rôle de chaque acteur sont écrits." },
@@ -119,7 +119,7 @@ const calendarRoadmap = [
   { id: "roadmap-3", stage: "Candidatures", title: "Pipeline des dossiers", description: "Recevoir, classer et suivre les candidatures.", status: "done", proof: "Chaque dossier possède un statut et une prochaine action." },
   { id: "roadmap-4", stage: "Dossier", title: "Complétude en boucle", description: "Demander directement au candidat la pièce autorisée manquante.", status: "done", proof: "La réception relance automatiquement la relecture." },
   { id: "roadmap-5", stage: "Agents", title: "Comparaison expliquée", description: "Présenter les faits, preuves, inconnues et alertes.", status: "todo", proof: "Le propriétaire comprend la proposition sans score opaque." },
-  { id: "roadmap-6", stage: "Validation", title: "Actions contrôlées", description: "Préparer messages, publications et transmissions dans une file.", status: "todo", proof: "Une action sensible est bloquée tant qu'elle n'est pas autorisée." },
+  { id: "roadmap-6", stage: "Validation", title: "Actions contrôlées", description: "Préparer messages, publications et transmissions dans une file.", status: "doing", proof: "Une action sensible est bloquée tant qu'elle n'est pas autorisée." },
   { id: "roadmap-7", stage: "Visite", title: "Créneaux compatibles", description: "Proposer, confirmer et historiser les rendez-vous.", status: "doing", proof: "Aucune visite ne crée une acceptation implicite." },
   { id: "roadmap-8", stage: "Production", title: "Partenaires et exploitation", description: "Préparer API, partenaires habilités, sauvegardes et supervision.", status: "todo", proof: "Le rôle juridique et le plan de retour arrière sont explicites." }
 ];

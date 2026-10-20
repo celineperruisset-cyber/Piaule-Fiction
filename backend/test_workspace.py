@@ -910,3 +910,179 @@ def test_document_preflight_flags_integrity_type_and_duplicate_without_certifyin
         )
         assert analyzed.status_code == 200
         assert analyzed.json()["dernier_controle"]["resultat"] == "attention"
+def test_agent_actions_require_owner_approval_are_idempotent_and_audited():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.AGENT_INTERNAL_TOKEN = "agent-test-token"
+        owner = TestClient(main.app)
+        other_owner = TestClient(main.app)
+
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "action-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert created.status_code == 200
+        workspace_id = created.json()["workspace_id"]
+        other_created = other_owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Other",
+                "email": "action-other@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert other_created.status_code == 200
+
+        property_id = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien action test",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue de la validation",
+                "ville": "Lille",
+            },
+        ).json()["id"]
+        run = owner.post(
+            "/api/internal/agent-runs",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={
+                "workspace_id": workspace_id,
+                "type_agent": "agent-completude",
+                "mission": "Préparer une demande de pièce manquante",
+                "cible_type": "bien",
+                "cible_id": property_id,
+                "entree": {"raison": "dossier incomplet"},
+            },
+        )
+        assert run.status_code == 201
+        run_id = run.json()["id"]
+
+        action_payload = {
+            "workspace_id": workspace_id,
+            "agent_run_id": run_id,
+            "type_action": "preparer_message_candidat",
+            "libelle": "Demander le justificatif de domicile",
+            "description": "Préparer un message ciblé sans l'envoyer.",
+            "niveau_risque": "transmission",
+            "destinataire": "alex@example.test",
+            "cible_type": "bien",
+            "cible_id": property_id,
+            "bien_id": property_id,
+            "payload": {"pieces": ["domicile"], "mode": "brouillon"},
+            "idempotency_key": "missing-home-proof-001",
+        }
+        action = owner.post(
+            "/api/internal/actions",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json=action_payload,
+        )
+        assert action.status_code == 201
+        action_id = action.json()["id"]
+        assert action.json()["statut"] == "a_valider"
+        assert action.json()["necessite_validation"] is True
+
+        replay = owner.post(
+            "/api/internal/actions",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json=action_payload,
+        )
+        assert replay.status_code == 200
+        assert replay.json()["id"] == action_id
+
+        conflict = dict(action_payload)
+        conflict["payload"] = {"pieces": ["identite"], "mode": "brouillon"}
+        assert owner.post(
+            "/api/internal/actions",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json=conflict,
+        ).status_code == 409
+
+        assert other_owner.get("/api/actions").json() == []
+        assert other_owner.get(f"/api/actions/{action_id}").status_code == 404
+        assert owner.post(
+            f"/api/internal/actions/{action_id}/execute",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={"reference_execution": "provider-test-1"},
+        ).status_code == 409
+
+        approved = owner.post(
+            f"/api/actions/{action_id}/approve",
+            json={"motif": "Le propriétaire valide la préparation."},
+        )
+        assert approved.status_code == 200
+        assert approved.json()["statut"] == "autorisee"
+
+        executed = owner.post(
+            f"/api/internal/actions/{action_id}/execute",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={
+                "reference_execution": "provider-test-1",
+                "resultat": {"mode": "test", "aucun_envoi": True},
+            },
+        )
+        assert executed.status_code == 200
+        assert executed.json()["statut"] == "executee"
+        assert owner.post(
+            f"/api/internal/actions/{action_id}/execute",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={"reference_execution": "provider-test-1"},
+        ).json()["statut"] == "executee"
+
+        audit = owner.get("/api/audit", params={"entite_id": action_id})
+        assert audit.status_code == 200
+        assert [event["evenement"] for event in audit.json()] == [
+            "action_executee",
+            "action_autorisee",
+            "action_proposee",
+        ]
+
+
+def test_agent_action_can_be_rejected_without_execution():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.AGENT_INTERNAL_TOKEN = "agent-test-token"
+        owner = TestClient(main.app)
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "reject-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        workspace_id = created.json()["workspace_id"]
+        action = owner.post(
+            "/api/internal/actions",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={
+                "workspace_id": workspace_id,
+                "type_action": "preparer_relance",
+                "libelle": "Préparer une relance",
+                "niveau_risque": "transmission",
+                "payload": {"texte": "brouillon"},
+                "idempotency_key": "reject-follow-up-001",
+            },
+        )
+        action_id = action.json()["id"]
+        rejected = owner.post(
+            f"/api/actions/{action_id}/reject",
+            json={"motif": "Le propriétaire souhaite relire le dossier."},
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["statut"] == "refusee"
+        assert owner.post(
+            f"/api/internal/actions/{action_id}/execute",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={},
+        ).status_code == 409

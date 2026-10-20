@@ -67,6 +67,7 @@ DOSSIER_FACILE_REDIRECT_URI = os.getenv("PIAULE_DOSSIER_FACILE_REDIRECT_URI", ""
 DOSSIER_FACILE_WEBHOOK_TOKEN = os.getenv("PIAULE_DOSSIER_FACILE_WEBHOOK_TOKEN", "").strip()
 DOSSIER_FACILE_STATE_SECONDS = 600
 VERIFICATION_INTERNAL_TOKEN = os.getenv("PIAULE_VERIFICATION_INTERNAL_TOKEN", "").strip()
+AGENT_INTERNAL_TOKEN = os.getenv("PIAULE_AGENT_INTERNAL_TOKEN", "").strip()
 CANDIDATE_PORTAL_BASE_URL = os.getenv(
     "PIAULE_CANDIDATE_PORTAL_BASE_URL",
     "http://127.0.0.1:5173/candidature.html",
@@ -125,6 +126,135 @@ class WorkspaceMember(BaseModel):
     prenom: str
     role: Literal["owner"] = "owner"
     joined_at: str
+
+
+AgentRunStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+ActionStatus = Literal[
+    "proposee",
+    "a_valider",
+    "autorisee",
+    "executee",
+    "confirmee",
+    "refusee",
+    "expiree",
+    "bloquee",
+]
+ActionRisk = Literal[
+    "lecture",
+    "brouillon",
+    "transmission",
+    "engagement_financier",
+    "decision",
+    "irreversible",
+]
+ActionDecision = Literal["autorisee", "refusee"]
+
+
+class AgentRunCreate(BaseModel):
+    type_agent: str = Field(min_length=2, max_length=120)
+    mission: str = Field(min_length=2, max_length=2000)
+    cible_type: str = Field(default="", max_length=80)
+    cible_id: str = Field(default="", max_length=160)
+    entree: dict[str, object] = Field(default_factory=dict)
+
+
+class AgentRun(BaseModel):
+    id: str
+    workspace_id: str
+    type_agent: str
+    mission: str
+    cible_type: str
+    cible_id: str
+    statut: AgentRunStatus
+    entree: dict[str, object]
+    sortie: dict[str, object]
+    preuves: list[dict[str, object]]
+    erreur: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class AgentRunStatusUpdate(BaseModel):
+    statut: AgentRunStatus
+    sortie: dict[str, object] = Field(default_factory=dict)
+    preuves: list[dict[str, object]] = Field(default_factory=list)
+    erreur: str = Field(default="", max_length=4000)
+
+
+class ActionCreate(BaseModel):
+    type_action: str = Field(min_length=2, max_length=120)
+    libelle: str = Field(min_length=2, max_length=240)
+    description: str = Field(default="", max_length=4000)
+    niveau_risque: ActionRisk = "transmission"
+    destinataire: str = Field(default="", max_length=500)
+    cible_type: str = Field(default="", max_length=80)
+    cible_id: str = Field(default="", max_length=160)
+    bien_id: str | None = Field(default=None, max_length=160)
+    candidature_id: str | None = Field(default=None, max_length=160)
+    agent_run_id: str | None = Field(default=None, max_length=160)
+    payload: dict[str, object] = Field(default_factory=dict)
+    idempotency_key: str = Field(min_length=8, max_length=180)
+    expire_le: str | None = Field(default=None, max_length=80)
+
+
+class Action(BaseModel):
+    id: str
+    workspace_id: str
+    agent_run_id: str | None = None
+    type_action: str
+    libelle: str
+    description: str
+    niveau_risque: ActionRisk
+    necessite_validation: bool
+    destinataire: str
+    cible_type: str
+    cible_id: str
+    bien_id: str | None = None
+    candidature_id: str | None = None
+    payload: dict[str, object]
+    empreinte_payload: str
+    idempotency_key: str
+    statut: ActionStatus
+    expire_le: str | None = None
+    autorisee_le: str | None = None
+    executee_le: str | None = None
+    reference_execution: str = ""
+    dernier_motif: str = ""
+    created_at: str
+    updated_at: str
+
+
+class ActionDecisionRequest(BaseModel):
+    motif: str = Field(default="", max_length=2000)
+
+
+class ActionExecutionUpdate(BaseModel):
+    reference_execution: str = Field(default="", max_length=240)
+    resultat: dict[str, object] = Field(default_factory=dict)
+
+
+class InternalAgentRunCreate(AgentRunCreate):
+    workspace_id: str = Field(min_length=3, max_length=160)
+
+
+class InternalAgentActionCreate(ActionCreate):
+    workspace_id: str = Field(min_length=3, max_length=160)
+
+
+class AuditEvent(BaseModel):
+    id: str
+    workspace_id: str
+    acteur_type: str
+    acteur_id: str
+    evenement: str
+    entite_type: str
+    entite_id: str
+    bien_id: str | None = None
+    candidature_id: str | None = None
+    metadata: dict[str, object]
+    created_at: str
 
 
 VerificationPolicy = Literal["standard", "renforcee", "officielle"]
@@ -1178,6 +1308,86 @@ def _ensure_database() -> None:
             CREATE INDEX IF NOT EXISTS visits_workspace_idx ON visits(workspace_id, created_at);
             CREATE INDEX IF NOT EXISTS visits_application_idx ON visits(application_id, created_at);
             CREATE INDEX IF NOT EXISTS visits_slot_idx ON visits(slot_id, status);
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                agent_type TEXT NOT NULL,
+                mission TEXT NOT NULL,
+                target_type TEXT NOT NULL DEFAULT '',
+                target_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'queued',
+                input_json TEXT NOT NULL DEFAULT '{}',
+                output_json TEXT NOT NULL DEFAULT '{}',
+                evidence_json TEXT NOT NULL DEFAULT '[]',
+                error TEXT NOT NULL DEFAULT '',
+                started_at TEXT,
+                finished_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS agent_runs_workspace_idx ON agent_runs(workspace_id, created_at);
+            CREATE TABLE IF NOT EXISTS actions (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                agent_run_id TEXT,
+                action_type TEXT NOT NULL,
+                label TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                risk_level TEXT NOT NULL,
+                requires_approval INTEGER NOT NULL DEFAULT 1,
+                recipient TEXT NOT NULL DEFAULT '',
+                target_type TEXT NOT NULL DEFAULT '',
+                target_id TEXT NOT NULL DEFAULT '',
+                property_id TEXT,
+                application_id TEXT,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                payload_hash TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'a_valider',
+                expires_at TEXT,
+                approved_at TEXT,
+                executed_at TEXT,
+                execution_reference TEXT NOT NULL DEFAULT '',
+                last_reason TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(workspace_id, idempotency_key),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE SET NULL,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS actions_workspace_idx ON actions(workspace_id, created_at);
+            CREATE INDEX IF NOT EXISTS actions_status_idx ON actions(workspace_id, status, created_at);
+            CREATE TABLE IF NOT EXISTS approvals (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                action_id TEXT NOT NULL,
+                approver_email TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS approvals_action_idx ON approvals(action_id, created_at);
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                actor_type TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                event_name TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                property_id TEXT,
+                application_id TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS audit_workspace_idx ON audit_events(workspace_id, created_at);
+            CREATE INDEX IF NOT EXISTS audit_entity_idx ON audit_events(workspace_id, entity_type, entity_id, created_at);
             CREATE TABLE IF NOT EXISTS candidate_completeness_followups (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -1395,6 +1605,254 @@ def _connect() -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys=ON")
     return connection
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _json_object(value: object, *, label: str, maximum: int = 50_000) -> str:
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"{label} doit être un objet JSON valide.") from exc
+    if len(encoded.encode("utf-8")) > maximum:
+        raise HTTPException(status_code=422, detail=f"{label} est trop volumineux.")
+    return encoded
+
+
+def _agent_internal_auth(request: Request) -> None:
+    """Authenticate the private agent worker without exposing a user session."""
+
+    if not AGENT_INTERNAL_TOKEN:
+        raise HTTPException(status_code=503, detail="Le canal interne des agents n'est pas configuré.")
+    received_token = request.headers.get("x-piaule-agent-token", "")
+    if not hmac.compare_digest(received_token, AGENT_INTERNAL_TOKEN):
+        raise HTTPException(status_code=401, detail="Jeton interne des agents invalide.")
+
+
+def _agent_run_from_row(row: sqlite3.Row) -> AgentRun:
+    return AgentRun(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        type_agent=row["agent_type"],
+        mission=row["mission"],
+        cible_type=row["target_type"],
+        cible_id=row["target_id"],
+        statut=row["status"],
+        entree=json.loads(row["input_json"] or "{}"),
+        sortie=json.loads(row["output_json"] or "{}"),
+        preuves=json.loads(row["evidence_json"] or "[]"),
+        erreur=row["error"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _action_from_row(row: sqlite3.Row) -> Action:
+    return Action(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        agent_run_id=row["agent_run_id"],
+        type_action=row["action_type"],
+        libelle=row["label"],
+        description=row["description"],
+        niveau_risque=row["risk_level"],
+        necessite_validation=bool(row["requires_approval"]),
+        destinataire=row["recipient"],
+        cible_type=row["target_type"],
+        cible_id=row["target_id"],
+        bien_id=row["property_id"],
+        candidature_id=row["application_id"],
+        payload=json.loads(row["payload_json"] or "{}"),
+        empreinte_payload=row["payload_hash"],
+        idempotency_key=row["idempotency_key"],
+        statut=row["status"],
+        expire_le=row["expires_at"],
+        autorisee_le=row["approved_at"],
+        executee_le=row["executed_at"],
+        reference_execution=row["execution_reference"],
+        dernier_motif=row["last_reason"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _audit_event_from_row(row: sqlite3.Row) -> AuditEvent:
+    return AuditEvent(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        acteur_type=row["actor_type"],
+        acteur_id=row["actor_id"],
+        evenement=row["event_name"],
+        entite_type=row["entity_type"],
+        entite_id=row["entity_id"],
+        bien_id=row["property_id"],
+        candidature_id=row["application_id"],
+        metadata=json.loads(row["metadata_json"] or "{}"),
+        created_at=row["created_at"],
+    )
+
+
+def _record_audit_event(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    actor_type: str,
+    actor_id: str,
+    event_name: str,
+    entity_type: str,
+    entity_id: str,
+    property_id: str | None = None,
+    application_id: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO audit_events(
+            id, workspace_id, actor_type, actor_id, event_name, entity_type,
+            entity_id, property_id, application_id, metadata_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            f"audit-{uuid4().hex[:16]}",
+            workspace_id,
+            _clean_text(actor_type, 40),
+            _clean_text(actor_id, 254),
+            _clean_text(event_name, 120),
+            _clean_text(entity_type, 80),
+            _clean_text(entity_id, 160),
+            property_id,
+            application_id,
+            _json_object(metadata or {}, label="Les métadonnées d'audit", maximum=20_000),
+            _iso_now(),
+        ),
+    )
+
+
+def _validate_action_scope(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    property_id: str | None,
+    application_id: str | None,
+) -> None:
+    if property_id:
+        property_row = connection.execute(
+            "SELECT id FROM properties WHERE id = ? AND workspace_id = ?",
+            (property_id, workspace_id),
+        ).fetchone()
+        if property_row is None:
+            raise HTTPException(status_code=404, detail="Le bien de l'action est introuvable dans ce workspace.")
+    if application_id:
+        application_row = connection.execute(
+            "SELECT property_id FROM owner_applications WHERE id = ? AND workspace_id = ?",
+            (application_id, workspace_id),
+        ).fetchone()
+        if application_row is None:
+            raise HTTPException(status_code=404, detail="La candidature de l'action est introuvable dans ce workspace.")
+        if property_id and application_row["property_id"] != property_id:
+            raise HTTPException(status_code=422, detail="Le bien et la candidature de l'action ne correspondent pas.")
+
+
+def _action_expired(row: sqlite3.Row) -> bool:
+    expires_at = row["expires_at"]
+    if not expires_at:
+        return False
+    try:
+        return datetime.fromisoformat(expires_at.replace("Z", "+00:00")) <= datetime.now(timezone.utc)
+    except ValueError:
+        return True
+
+
+def _create_agent_action(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    payload: ActionCreate,
+    actor_type: str,
+    actor_id: str,
+) -> tuple[sqlite3.Row, bool]:
+    _validate_action_scope(
+        connection,
+        workspace_id=workspace_id,
+        property_id=payload.bien_id,
+        application_id=payload.candidature_id,
+    )
+    if payload.agent_run_id:
+        run = connection.execute(
+            "SELECT id FROM agent_runs WHERE id = ? AND workspace_id = ?",
+            (payload.agent_run_id, workspace_id),
+        ).fetchone()
+        if run is None:
+            raise HTTPException(status_code=404, detail="La mission d'agent est introuvable dans ce workspace.")
+    payload_json = _json_object(payload.payload, label="Le contenu de l'action")
+    payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+    existing = connection.execute(
+        "SELECT * FROM actions WHERE workspace_id = ? AND idempotency_key = ?",
+        (workspace_id, _clean_text(payload.idempotency_key, 180)),
+    ).fetchone()
+    if existing is not None:
+        if existing["payload_hash"] != payload_hash or existing["action_type"] != payload.type_action:
+            raise HTTPException(status_code=409, detail="Cette clé d'idempotence désigne déjà une autre action.")
+        return existing, False
+
+    requires_approval = payload.niveau_risque not in {"lecture", "brouillon"}
+    action_status = "a_valider" if requires_approval else "proposee"
+    now = _iso_now()
+    action_id = f"action-{uuid4().hex[:16]}"
+    connection.execute(
+        """
+        INSERT INTO actions(
+            id, workspace_id, agent_run_id, action_type, label, description,
+            risk_level, requires_approval, recipient, target_type, target_id,
+            property_id, application_id, payload_json, payload_hash,
+            idempotency_key, status, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            action_id,
+            workspace_id,
+            payload.agent_run_id,
+            _clean_text(payload.type_action, 120),
+            _clean_text(payload.libelle, 240),
+            _clean_text(payload.description, 4000),
+            payload.niveau_risque,
+            int(requires_approval),
+            _clean_text(payload.destinataire, 500),
+            _clean_text(payload.cible_type, 80),
+            _clean_text(payload.cible_id, 160),
+            payload.bien_id,
+            payload.candidature_id,
+            payload_json,
+            payload_hash,
+            _clean_text(payload.idempotency_key, 180),
+            action_status,
+            payload.expire_le,
+            now,
+            now,
+        ),
+    )
+    _record_audit_event(
+        connection,
+        workspace_id=workspace_id,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        event_name="action_proposee",
+        entity_type="action",
+        entity_id=action_id,
+        property_id=payload.bien_id,
+        application_id=payload.candidature_id,
+        metadata={
+            "type_action": payload.type_action,
+            "niveau_risque": payload.niveau_risque,
+            "necessite_validation": requires_approval,
+            "empreinte_payload": payload_hash,
+        },
+    )
+    return connection.execute("SELECT * FROM actions WHERE id = ?", (action_id,)).fetchone(), True
 
 
 def _secure_cookie(request: Request) -> bool:
@@ -3206,6 +3664,383 @@ def update_workspace(
         owner_email=workspace.owner_email,
         created_at=workspace.created_at,
     )
+
+
+@app.get("/api/agent-runs", response_model=list[AgentRun])
+def list_agent_runs(
+    statut: AgentRunStatus | None = None,
+    limit: int = 50,
+    owner: Candidate = Depends(current_candidate),
+) -> list[AgentRun]:
+    """List the agent missions belonging to the current owner's workspace."""
+
+    safe_limit = max(1, min(limit, 100))
+    with closing(_connect()) as connection:
+        query = "SELECT * FROM agent_runs WHERE workspace_id = ?"
+        values: list[object] = [owner.workspace_id]
+        if statut:
+            query += " AND status = ?"
+            values.append(statut)
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        values.append(safe_limit)
+        rows = connection.execute(query, values).fetchall()
+    return [_agent_run_from_row(row) for row in rows]
+
+
+@app.get("/api/agent-runs/{run_id}", response_model=AgentRun)
+def get_agent_run(run_id: str, owner: Candidate = Depends(current_candidate)) -> AgentRun:
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT * FROM agent_runs WHERE id = ? AND workspace_id = ?",
+            (run_id, owner.workspace_id),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Mission d'agent introuvable dans ce workspace.")
+    return _agent_run_from_row(row)
+
+
+@app.get("/api/actions", response_model=list[Action])
+def list_actions(
+    statut: ActionStatus | None = None,
+    niveau_risque: ActionRisk | None = None,
+    limit: int = 50,
+    owner: Candidate = Depends(current_candidate),
+) -> list[Action]:
+    """Return the validation queue without executing any action."""
+
+    safe_limit = max(1, min(limit, 100))
+    with closing(_connect()) as connection:
+        query = "SELECT * FROM actions WHERE workspace_id = ?"
+        values: list[object] = [owner.workspace_id]
+        if statut:
+            query += " AND status = ?"
+            values.append(statut)
+        if niveau_risque:
+            query += " AND risk_level = ?"
+            values.append(niveau_risque)
+        query += " ORDER BY CASE status WHEN 'a_valider' THEN 0 WHEN 'autorisee' THEN 1 ELSE 2 END, created_at DESC, id DESC LIMIT ?"
+        values.append(safe_limit)
+        rows = connection.execute(query, values).fetchall()
+    return [_action_from_row(row) for row in rows]
+
+
+@app.get("/api/actions/{action_id}", response_model=Action)
+def get_action(action_id: str, owner: Candidate = Depends(current_candidate)) -> Action:
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT * FROM actions WHERE id = ? AND workspace_id = ?",
+            (action_id, owner.workspace_id),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Action introuvable dans ce workspace.")
+    return _action_from_row(row)
+
+
+def _owner_decide_action(
+    action_id: str,
+    *,
+    decision: ActionDecision,
+    payload: ActionDecisionRequest,
+    owner: Candidate,
+) -> Action:
+    reason = _clean_text(payload.motif, 2000)
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT * FROM actions WHERE id = ? AND workspace_id = ?",
+            (action_id, owner.workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Action introuvable dans ce workspace.")
+        if row["status"] == "executee":
+            raise HTTPException(status_code=409, detail="Une action déjà exécutée ne peut plus être modifiée.")
+        if _action_expired(row):
+            if row["status"] not in {"expiree", "refusee"}:
+                connection.execute(
+                    "UPDATE actions SET status = 'expiree', last_reason = ?, updated_at = ? WHERE id = ?",
+                    ("La durée de validité de l'action est dépassée.", _iso_now(), action_id),
+                )
+                _record_audit_event(
+                    connection,
+                    workspace_id=owner.workspace_id,
+                    actor_type="system",
+                    actor_id="action-center",
+                    event_name="action_expiree",
+                    entity_type="action",
+                    entity_id=action_id,
+                    property_id=row["property_id"],
+                    application_id=row["application_id"],
+                )
+                connection.commit()
+            raise HTTPException(status_code=409, detail="Cette action a expiré et doit être préparée à nouveau.")
+        if decision == "autorisee":
+            if not row["requires_approval"]:
+                raise HTTPException(status_code=409, detail="Cette action ne nécessite pas de validation.")
+            if row["status"] == "autorisee":
+                return _action_from_row(row)
+            if row["status"] != "a_valider":
+                raise HTTPException(status_code=409, detail="Cette action n'est plus dans la file de validation.")
+            next_status = "autorisee"
+            event_name = "action_autorisee"
+        else:
+            if row["status"] == "refusee":
+                return _action_from_row(row)
+            if row["status"] not in {"proposee", "a_valider"}:
+                raise HTTPException(status_code=409, detail="Cette action ne peut plus être refusée.")
+            next_status = "refusee"
+            event_name = "action_refusee"
+        now = _iso_now()
+        connection.execute(
+            """
+            UPDATE actions
+            SET status = ?, approved_at = CASE WHEN ? = 'autorisee' THEN ? ELSE approved_at END,
+                last_reason = ?, updated_at = ?
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (next_status, next_status, now, reason, now, action_id, owner.workspace_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO approvals(id, workspace_id, action_id, approver_email, decision, reason, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (f"approval-{uuid4().hex[:16]}", owner.workspace_id, action_id, owner.email, decision, reason, now),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name=event_name,
+            entity_type="action",
+            entity_id=action_id,
+            property_id=row["property_id"],
+            application_id=row["application_id"],
+            metadata={"motif": reason, "decision": decision},
+        )
+        connection.commit()
+        updated = connection.execute("SELECT * FROM actions WHERE id = ?", (action_id,)).fetchone()
+    return _action_from_row(updated)
+
+
+@app.post("/api/actions/{action_id}/approve", response_model=Action)
+def approve_action(
+    action_id: str,
+    payload: ActionDecisionRequest,
+    owner: Candidate = Depends(current_candidate),
+) -> Action:
+    """Authorize a sensitive agent proposal without executing it."""
+
+    return _owner_decide_action(action_id, decision="autorisee", payload=payload, owner=owner)
+
+
+@app.post("/api/actions/{action_id}/reject", response_model=Action)
+def reject_action(
+    action_id: str,
+    payload: ActionDecisionRequest,
+    owner: Candidate = Depends(current_candidate),
+) -> Action:
+    return _owner_decide_action(action_id, decision="refusee", payload=payload, owner=owner)
+
+
+@app.get("/api/audit", response_model=list[AuditEvent])
+def list_audit_events(
+    entite_type: str | None = None,
+    entite_id: str | None = None,
+    limit: int = 100,
+    owner: Candidate = Depends(current_candidate),
+) -> list[AuditEvent]:
+    safe_limit = max(1, min(limit, 200))
+    with closing(_connect()) as connection:
+        query = "SELECT * FROM audit_events WHERE workspace_id = ?"
+        values: list[object] = [owner.workspace_id]
+        if entite_type:
+            query += " AND entity_type = ?"
+            values.append(_clean_text(entite_type, 80))
+        if entite_id:
+            query += " AND entity_id = ?"
+            values.append(_clean_text(entite_id, 160))
+        query += " ORDER BY rowid DESC LIMIT ?"
+        values.append(safe_limit)
+        rows = connection.execute(query, values).fetchall()
+    return [_audit_event_from_row(row) for row in rows]
+
+
+@app.post("/api/internal/agent-runs", response_model=AgentRun, status_code=201)
+def create_agent_run(payload: InternalAgentRunCreate, request: Request) -> AgentRun:
+    """Create a mission from a trusted worker; no model call happens here."""
+
+    _agent_internal_auth(request)
+    run_id = f"agent-run-{uuid4().hex[:16]}"
+    now = _iso_now()
+    input_json = _json_object(payload.entree, label="L'entrée de la mission")
+    with closing(_connect()) as connection:
+        workspace = connection.execute("SELECT id FROM workspaces WHERE id = ?", (payload.workspace_id,)).fetchone()
+        if workspace is None:
+            raise HTTPException(status_code=404, detail="Workspace introuvable.")
+        connection.execute(
+            """
+            INSERT INTO agent_runs(
+                id, workspace_id, agent_type, mission, target_type, target_id,
+                status, input_json, output_json, evidence_json, error,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, '{}', '[]', '', ?, ?)
+            """,
+            (
+                run_id,
+                payload.workspace_id,
+                _clean_text(payload.type_agent, 120),
+                _clean_text(payload.mission, 2000),
+                _clean_text(payload.cible_type, 80),
+                _clean_text(payload.cible_id, 160),
+                input_json,
+                now,
+                now,
+            ),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=payload.workspace_id,
+            actor_type="agent",
+            actor_id=_clean_text(payload.type_agent, 120),
+            event_name="mission_agent_creee",
+            entity_type="agent_run",
+            entity_id=run_id,
+            metadata={"mission": _clean_text(payload.mission, 2000)},
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
+    return _agent_run_from_row(row)
+
+
+@app.put("/api/internal/agent-runs/{run_id}", response_model=AgentRun)
+def update_agent_run(
+    run_id: str,
+    payload: AgentRunStatusUpdate,
+    request: Request,
+) -> AgentRun:
+    _agent_internal_auth(request)
+    terminal_statuses = {"completed", "failed", "cancelled"}
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        row = connection.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Mission d'agent introuvable.")
+        if row["status"] in terminal_statuses:
+            return _agent_run_from_row(row)
+        output_json = _json_object(payload.sortie, label="La sortie de la mission")
+        evidence_json = _json_object(payload.preuves, label="Les preuves de la mission", maximum=50_000)
+        started_at = row["started_at"] or (now if payload.statut == "running" else None)
+        finished_at = now if payload.statut in terminal_statuses else row["finished_at"]
+        connection.execute(
+            """
+            UPDATE agent_runs
+            SET status = ?, output_json = ?, evidence_json = ?, error = ?,
+                started_at = ?, finished_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                payload.statut,
+                output_json,
+                evidence_json,
+                _clean_text(payload.erreur, 4000),
+                started_at,
+                finished_at,
+                now,
+                run_id,
+            ),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=row["workspace_id"],
+            actor_type="agent",
+            actor_id="agent-worker",
+            event_name="mission_agent_mise_a_jour",
+            entity_type="agent_run",
+            entity_id=run_id,
+            metadata={"statut": payload.statut, "erreur": _clean_text(payload.erreur, 4000)},
+        )
+        connection.commit()
+        updated = connection.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
+    return _agent_run_from_row(updated)
+
+
+@app.post("/api/internal/actions", response_model=Action, status_code=201)
+def create_internal_action(payload: InternalAgentActionCreate, request: Request, response: Response) -> Action:
+    """Persist an agent proposal; external side effects are intentionally absent."""
+
+    _agent_internal_auth(request)
+    with closing(_connect()) as connection:
+        row, created = _create_agent_action(
+            connection,
+            workspace_id=payload.workspace_id,
+            payload=payload,
+            actor_type="agent",
+            actor_id=payload.agent_run_id or "agent-worker",
+        )
+        connection.commit()
+    if not created:
+        response.status_code = 200
+    return _action_from_row(row)
+
+
+@app.post("/api/internal/actions/{action_id}/execute", response_model=Action)
+def execute_action(action_id: str, payload: ActionExecutionUpdate, request: Request) -> Action:
+    """Record execution after approval; this endpoint is only a provider boundary marker."""
+
+    _agent_internal_auth(request)
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        row = connection.execute("SELECT * FROM actions WHERE id = ?", (action_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Action introuvable.")
+        if row["status"] == "executee":
+            return _action_from_row(row)
+        if _action_expired(row):
+            connection.execute(
+                "UPDATE actions SET status = 'expiree', last_reason = ?, updated_at = ? WHERE id = ?",
+                ("La durée de validité de l'action est dépassée.", now, action_id),
+            )
+            _record_audit_event(
+                connection,
+                workspace_id=row["workspace_id"],
+                actor_type="system",
+                actor_id="action-center",
+                event_name="action_expiree",
+                entity_type="action",
+                entity_id=action_id,
+                property_id=row["property_id"],
+                application_id=row["application_id"],
+            )
+            connection.commit()
+            raise HTTPException(status_code=409, detail="Cette action a expiré et doit être préparée à nouveau.")
+        if row["requires_approval"] and row["status"] != "autorisee":
+            raise HTTPException(status_code=409, detail="La validation du propriétaire est requise avant exécution.")
+        result_json = _json_object(payload.resultat, label="Le résultat d'exécution", maximum=20_000)
+        reference = _clean_text(payload.reference_execution, 240)
+        connection.execute(
+            """
+            UPDATE actions
+            SET status = 'executee', executed_at = ?, execution_reference = ?,
+                last_reason = '', updated_at = ?
+            WHERE id = ?
+            """,
+            (now, reference, now, action_id),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=row["workspace_id"],
+            actor_type="agent",
+            actor_id="agent-worker",
+            event_name="action_executee",
+            entity_type="action",
+            entity_id=action_id,
+            property_id=row["property_id"],
+            application_id=row["application_id"],
+            metadata={"reference_execution": reference, "resultat": json.loads(result_json)},
+        )
+        connection.commit()
+        updated = connection.execute("SELECT * FROM actions WHERE id = ?", (action_id,)).fetchone()
+    return _action_from_row(updated)
 
 
 @app.get("/api/workspace/membres", response_model=list[WorkspaceMember])

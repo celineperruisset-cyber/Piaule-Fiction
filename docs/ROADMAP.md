@@ -21,6 +21,8 @@
 9. Calendrier de visites et historique.
 10. Journal d'audit, export et suppression.
 
+Le centre d'actions, de validations et d'audit est maintenant persistant côté backend. Les agents peuvent enregistrer une mission et proposer une action avec une empreinte et une clé d'idempotence. Le propriétaire peut autoriser ou refuser la proposition, et une exécution prématurée est bloquée. L'exécution actuelle ne fait qu'enregistrer le résultat de test ; elle ne déclenche encore aucun connecteur externe.
+
 ## Connecteurs
 
 Pour chaque source ou outil, documenter avant développement : données accessibles, API ou flux officiels, webhooks, exports, permissions, coût, limites, droits de publication, provenance, suppression et méthode de révocation.
@@ -42,9 +44,8 @@ Le socle de visites est maintenant disponible sans connecteur externe : le propr
 
 ## Prochaine séquence de travail
 
-1. Valider l'interface propriétaire avec données synthétiques.
-2. Remplacer le contrat backend candidat-first par un contrat workspace propriétaire.
-3. Ajouter les tables biens, candidatures, actions et validations.
-4. Brancher le premier écran sur l'API locale.
-5. Tester la boucle « dossier incomplet → demande ciblée → nouvelle pièce → relecture ».
-6. Faire relire le périmètre commercial par la CCI ou un conseil spécialisé avant tout lancement de gestion locative.
+1. Brancher la file d'actions et le journal d'audit au frontend propriétaire.
+2. Définir les contrats d'entrée, de sortie et de permission de chaque agent.
+3. Tester la boucle « dossier incomplet → demande ciblée → nouvelle pièce → relecture » avec une action validée.
+4. Ajouter les connecteurs un par un derrière la file de validation.
+5. Faire relire le périmètre commercial par la CCI ou un conseil spécialisé avant tout lancement de gestion locative.

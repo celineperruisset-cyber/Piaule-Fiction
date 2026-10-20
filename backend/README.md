@@ -40,3 +40,15 @@ La récupération de compte utilise `POST /api/mot-de-passe-oublie` puis `POST /
 Une récupération par SMS est prévue après ce socle. Elle devra utiliser un numéro vérifié, un fournisseur SMS, un code à usage unique expirant rapidement, des limites anti-abus et un audit. Elle ne remplace pas encore le parcours e-mail actuel.
 
 La base `.local-state/` et les uploads privés ne doivent jamais être versionnés. Aucun connecteur réel, message, publication, signature ou paiement ne doit être activé avant d’avoir une permission explicite, une file de validation et un audit.
+
+## Actions des agents, validations et audit
+
+Le centre de contrôle est disponible sans frontend :
+
+- le worker interne crée une mission avec `POST /api/internal/agent-runs` et la met à jour avec `PUT /api/internal/agent-runs/{id}` ;
+- il propose une action immuable avec `POST /api/internal/actions` ;
+- le propriétaire consulte la file avec `GET /api/actions`, puis utilise `POST /api/actions/{id}/approve` ou `POST /api/actions/{id}/reject` ;
+- le worker ne peut marquer une action sensible exécutée qu'après autorisation avec `POST /api/internal/actions/{id}/execute` ;
+- le parcours complet est disponible dans `GET /api/audit`.
+
+Les routes privées exigent `x-piaule-agent-token` correspondant à `PIAULE_AGENT_INTERNAL_TOKEN`. La clé d'idempotence empêche une proposition rejouée de créer un doublon. La première exécution est un marqueur de test : aucun e-mail, SMS, paiement, calendrier ou publication externe n'est déclenché par ce centre.

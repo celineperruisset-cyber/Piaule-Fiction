@@ -30,6 +30,29 @@ Les agents écrivent des propositions et des preuves. Les transmissions externes
 4. Relier le dashboard à des réponses persistées synthétiques.
 5. Ajouter les connecteurs un par un, uniquement après documentation des permissions.
 
+## Actions, validations et audit
+
+Le centre d'actions constitue la frontière entre le travail des agents et les effets qui peuvent engager le propriétaire. Une mission d'agent est enregistrée dans `agent_runs`, puis l'agent peut produire une proposition persistée dans `actions`. Le contenu de la proposition est conservé sous forme JSON, avec une empreinte SHA-256 et une clé d'idempotence propre au workspace.
+
+Les routes privées du worker sont protégées par `x-piaule-agent-token` et `PIAULE_AGENT_INTERNAL_TOKEN` :
+
+- `POST /api/internal/agent-runs` crée une mission `queued` ;
+- `PUT /api/internal/agent-runs/{id}` met à jour son statut, sa sortie et ses preuves ;
+- `POST /api/internal/actions` crée une action ou renvoie la même action lorsqu'une clé d'idempotence est rejouée ;
+- `POST /api/internal/actions/{id}/execute` marque l'action exécutée après autorisation, sans appeler de fournisseur externe.
+
+Les routes du propriétaire sont :
+
+- `GET /api/agent-runs` et `GET /api/agent-runs/{id}` ;
+- `GET /api/actions` et `GET /api/actions/{id}` ;
+- `POST /api/actions/{id}/approve` pour autoriser une action sensible ;
+- `POST /api/actions/{id}/reject` pour la refuser avec un motif ;
+- `GET /api/audit` pour relire les propositions, décisions, expirations et exécutions.
+
+Les risques reconnus sont `lecture`, `brouillon`, `transmission`, `engagement_financier`, `decision` et `irreversible`. Les actions de transmission, de décision ou d'engagement restent `a_valider` jusqu'à l'autorisation explicite du propriétaire. Une tentative d'exécution avant validation est refusée. L'exécution est idempotente : une répétition ne crée pas de second effet enregistré.
+
+Les événements d'audit sont append-only via l'API : création et mise à jour de mission, proposition d'action, autorisation, refus, expiration et exécution. Chaque événement conserve l'acteur, le workspace, l'entité concernée et des métadonnées limitées. Les nouvelles routes ne déclenchent aucun e-mail, SMS, paiement, publication ou rendez-vous externe ; ces connecteurs seront branchés ensuite derrière cette frontière.
+
 ## Biens et lots disponibles
 
 Le premier domaine persistant est maintenant disponible :
