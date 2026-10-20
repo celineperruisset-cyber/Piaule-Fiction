@@ -11,8 +11,8 @@ workspace
   │     ├── documents
   │     └── completeness / coherence findings
   ├── agent runs
-  ├── private agent team / orchestrator messages
-  ├── publication connections / first validation
+  ├── private agent team / orchestrator messages / contracts
+  ├── publication connections / publication jobs / first validation
   ├── actions / approvals
   ├── visits
   └── audit events
@@ -26,15 +26,15 @@ Les agents écrivent des propositions et des preuves. Les transmissions externes
 
 ## Équipe privée du propriétaire
 
-Chaque création de compte provisionne le même catalogue fonctionnel d'agents dans une instance propre au workspace : Orchestrateur, Bien, Candidatures, Complétude, Confiance, Comparaison, Visites, Communication, Conformité et Suivi. Le catalogue décrit les responsabilités ; l'identifiant, les missions, les messages et les futures mémoires restent isolés par `workspace_id`.
+Chaque création de compte provisionne le même catalogue fonctionnel d'agents dans une instance propre au workspace : Orchestrateur, Bien, Diffusion, Candidatures, Complétude, Confiance, Comparaison, Visites, Communication, Conformité et Suivi. Chaque agent conserve un contrat versionné (`entrees`, `sorties`, `actions`, `escalades`) dans `workspace_agents.contract_json`. L'identifiant, les missions, les messages et les futures mémoires restent isolés par `workspace_id`.
 
 Le propriétaire consulte l'équipe avec `GET /api/agents`. L'Orchestrateur est son point de contact :
 
 - `POST /api/agents/orchestrateur/messages` reçoit une demande et crée une mission `queued` ;
 - `GET /api/agents/orchestrateur/messages` relit les demandes et réponses ;
-- `GET /api/agents/{agent_id}` affiche un agent de son propre workspace.
+- `GET /api/agents/{agent_id}` affiche un agent et son contrat de son propre workspace.
 
-Une demande est conservée dans `agent_messages`, rattachée à `agent_runs` et auditée. La réponse IA n'est pas fabriquée par cette route : un worker d'orchestration devra consommer la mission, appeler le fournisseur autorisé, produire les preuves et écrire la réponse. Le propriétaire peut donc déjà voir la présence de son équipe et lui parler depuis le frontend, sans exposer de mission ou de donnée d'un autre workspace.
+Une demande est conservée dans `agent_messages`, rattachée à `agent_runs` et auditée. Le worker interne `POST /api/internal/agent-runs/process-next` consomme une mission Orchestrateur et crée des sous-missions spécialisées avec un routage déterministe. Cette première version ne fabrique pas de réponse LLM et n'exécute aucun effet externe ; elle prépare la file de travail et écrit une réponse d'état. Le fournisseur LLM et les workers spécialisés devront respecter ces contrats avant d'être activés.
 
 ## Publication et autorisation d'un compte propriétaire
 
@@ -49,9 +49,14 @@ Les routes sont :
 - `POST /api/diffusion/connexions/{id}/desactiver-automatique` pour revenir à une validation à chaque annonce ;
 - `POST /api/diffusion/connexions/{id}/revoquer` pour couper la connexion et l'autorisation automatique.
 
+Les jobs d'annonce sont exposés avec :
+
+- `POST /api/internal/diffusion/publications` pour créer un job idempotent rattaché à une mission `agent-diffusion` ;
+- `GET /api/diffusion/publications` et `GET /api/diffusion/publications/{id}` pour le cockpit propriétaire.
+
 La première publication est une action `publier_annonce` de l'Agent Diffusion. Elle doit être approuvée par le propriétaire avant l'exécution. Le canal interne marque alors `first_publication_validated_at` et conserve l'identifiant de l'action. Tant que ce champ est vide, l'autorisation automatique répond `409`. Une publication automatique ultérieure doit déclarer la connexion dans son payload et le mode automatique doit être actif.
 
-Aucun mot de passe n'est stocké. La connexion reste propre au workspace, les références de compte sont hachées et les activations, autorisations, désactivations et révocations sont inscrites dans l'audit. Cette couche ne contourne aucun CAPTCHA, aucune règle de plateforme et ne crée pas encore de connecteur réel.
+Aucun mot de passe n'est stocké. La connexion reste propre au workspace, les références de compte sont hachées et les activations, autorisations, désactivations, révocations et transitions des jobs sont inscrites dans l'audit. Cette couche ne contourne aucun CAPTCHA, aucune règle de plateforme et ne crée pas encore de connecteur réel.
 
 ## Première tranche
 
@@ -84,7 +89,18 @@ Les risques reconnus sont `lecture`, `brouillon`, `transmission`, `engagement_fi
 
 Les événements d'audit sont append-only via l'API : création et mise à jour de mission, proposition d'action, autorisation, refus, expiration et exécution. Chaque événement conserve l'acteur, le workspace, l'entité concernée et des métadonnées limitées. Les nouvelles routes ne déclenchent aucun e-mail, SMS, paiement, publication ou rendez-vous externe ; ces connecteurs seront branchés ensuite derrière cette frontière.
 
-Une seconde barrière contrôle le périmètre de l'agent. Une action liée à une mission est comparée à la politique du rôle (`agent-completude`, `agent-dossier`, `agent-comparaison`, `agent-visites`, `agent-bien` ou `agent-suivi`). Si le rôle ne possède pas cette capacité, l'API répond `403`, ne crée pas d'action et ajoute `agent_action_bloquee` dans l'audit. Cette liste de capacités est un socle technique provisoire ; elle sera affinée avec les contrats détaillés de chaque agent.
+Une seconde barrière contrôle le périmètre de l'agent. Une action liée à une mission est comparée à la politique du rôle. Si le rôle ne possède pas cette capacité, l'API répond `403`, ne crée pas d'action et ajoute `agent_action_bloquee` dans l'audit. Les contrats persistés donnent le vocabulaire métier ; la matrice d'actions reste un garde-fou technique et sera affinée avec les réponses aux questions de cadrage ci-dessous.
+
+## Questions de cadrage des contrats
+
+La version `v1` est volontairement prudente et sert de contrat de démarrage. Avant d'activer un fournisseur LLM ou un worker spécialisé, il faudra trancher :
+
+1. Le propriétaire autorise-t-il l'agent à préparer uniquement, ou aussi à envoyer automatiquement les relances de pièces et messages candidats ?
+2. Quelles actions doivent toujours rester dans la file de validation : publication, demande de pièce, proposition de visite, refus, sélection et modification d'une annonce ?
+3. L'Agent Comparaison peut-il seulement classer et expliquer, ou doit-il proposer une shortlist avec un seuil configuré par bien ?
+4. L'Agent Confiance doit-il produire des alertes techniques uniquement, ou déclencher des demandes de preuve externe lorsque le candidat a donné son consentement ?
+5. Qui possède la décision finale pour chaque étape : propriétaire seul, professionnel habilité, ou délégation configurable par workspace ?
+6. Pour l'Agent Diffusion, quels canaux seront autorisés au prototype et quelle preuve de connexion attend-on pour chacun ?
 
 ## Biens et lots disponibles
 

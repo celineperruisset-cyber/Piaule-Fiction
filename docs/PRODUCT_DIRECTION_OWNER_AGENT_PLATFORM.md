@@ -55,7 +55,7 @@ Il transforme les données du bien en annonce, contrôle les champs manquants et
 
 ### Agent Diffusion
 
-Il prépare et suit la publication d'une annonce sur les plateformes choisies par le propriétaire. Il utilise un connecteur officiel ou partenaire, ne conserve jamais les mots de passe et demande une première validation manuelle. Après cette première publication exécutée avec succès, le propriétaire peut autoriser les publications automatiques pour ce compte ; cette autorisation reste révocable et auditée.
+Il prépare et suit la publication d'une annonce sur les plateformes choisies par le propriétaire. Il utilise un connecteur officiel ou partenaire, ne conserve jamais les mots de passe et demande une première validation manuelle. Après cette première publication exécutée avec succès, le propriétaire peut autoriser les publications automatiques pour ce compte ; cette autorisation reste révocable et auditée. Chaque publication devient un job idempotent, visible dans la file d'actions et dans l'historique du bien.
 
 ### Agent Candidatures
 
@@ -117,7 +117,7 @@ Le premier déploiement est un SaaS propriétaire-first :
 5. les décisions réglementées ou sensibles remontent dans une file de validation ;
 6. un partenaire habilité peut prendre le relais pour les activités qu'il porte juridiquement.
 
-Le produit doit rendre visible cette séparation dans l'interface : **préparé par l'agent**, **à valider**, **exécuté par le propriétaire**, **exécuté par le partenaire**, **bloqué par le périmètre**.
+Le produit doit rendre visible cette séparation dans l'interface : **préparé par l'agent**, **à valider**, **exécuté par le propriétaire**, **exécuté par le partenaire**, **bloqué par le périmètre**. Le worker d'orchestration ne doit jamais masquer l'étape intermédiaire : il crée des sous-missions, puis chaque agent spécialisé produit ses propres preuves et actions.
 
 ## MVP reorienté
 

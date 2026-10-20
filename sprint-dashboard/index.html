@@ -208,11 +208,12 @@
               <li>Les créneaux et propositions de visite sont maintenant gérés dans le backend.</li>
               <li>Les missions d’agents, actions sensibles, validations et événements d’audit sont maintenant persistés.</li>
               <li>Chaque nouveau propriétaire reçoit automatiquement sa propre équipe de onze agents, avec un contact Orchestrateur.</li>
-              <li>Une demande envoyée à l’Orchestrateur devient une mission rattachée au workspace et auditée.</li>
-              <li>L’Agent Diffusion exige une première publication validée avant toute autorisation automatique.</li>
+              <li>Une demande envoyée à l’Orchestrateur devient une mission rattachée au workspace et auditée ; le worker crée les sous-missions spécialisées.</li>
+              <li>Les contrats des onze agents sont persistés avec entrées, sorties, actions et escalades.</li>
+              <li>Chaque publication devient un job idempotent et l’Agent Diffusion exige une première publication validée avant toute autorisation automatique.</li>
               <li>Le frontend propriétaire doit maintenant lire ces réponses réelles.</li>
             </ul>
-            <p><strong>Prochaine étape :</strong> relier le cockpit propriétaire à l’équipe provisionnée, puis brancher le worker d’orchestration et les connecteurs derrière la validation.</p>
+            <p><strong>Prochaine étape :</strong> relier le cockpit propriétaire aux contrats, missions et jobs persistés, puis brancher les workers spécialisés et le fournisseur LLM derrière la validation.</p>
             <p><a href="../docs/PRODUCT_BACKLOG_DIFFERENTIATION.md">Lire le backlog complet de différenciation</a></p>
           </article>
         </section>

@@ -9,8 +9,9 @@ Cette API devient le socle du workspace propriétaire. Le slice historique compt
 - `application` rattachée à un bien et à une source ;
 - `document` avec statut, provenance et accès ;
 - `agent_run`, `action`, `approval` et `audit_event` ;
-- `workspace_agent` et `agent_message` pour l'équipe privée du propriétaire ;
+- `workspace_agent` et `agent_message` pour l'équipe privée du propriétaire, avec un contrat versionné par agent ;
 - `publication_connection` pour les comptes de diffusion et leurs autorisations ;
+- `publication_job` pour chaque annonce préparée, validée, publiée ou échouée ;
 - `visit` et disponibilités ;
 - `connector` avec permissions et révocation.
 
@@ -35,15 +36,17 @@ La connexion Google utilise OpenID Connect avec les scopes `openid email profile
 
 ## Équipe d'agents du propriétaire
 
-À la création d'un compte classique ou Google, le backend provisionne automatiquement une équipe privée dans le workspace du propriétaire. Le catalogue initial comprend l'Orchestrateur, Bien, Candidatures, Complétude, Confiance, Comparaison, Visites, Communication, Conformité et Suivi. Ces instances ont des identifiants propres au workspace ; elles ne partagent ni messages, ni missions, ni données avec un autre propriétaire.
+À la création d'un compte classique ou Google, le backend provisionne automatiquement une équipe privée dans le workspace du propriétaire. Le catalogue initial comprend l'Orchestrateur, Bien, Diffusion, Candidatures, Complétude, Confiance, Comparaison, Visites, Communication, Conformité et Suivi. Chaque instance reçoit un contrat versionné qui décrit ses entrées, sorties, actions et cas d'escalade. Ces instances ont des identifiants propres au workspace ; elles ne partagent ni messages, ni missions, ni données avec un autre propriétaire.
 
-Le propriétaire peut afficher son équipe avec `GET /api/agents`. L'Orchestrateur est le point de contact principal : `POST /api/agents/orchestrateur/messages` enregistre une demande, crée une mission `queued` et ajoute un événement d'audit. `GET /api/agents/orchestrateur/messages` relit l'échange. Le worker devra ensuite prendre la mission, produire une réponse et mettre à jour le message ; ce branchement n'est pas simulé par l'API.
+Le propriétaire peut afficher son équipe avec `GET /api/agents` et consulter le contrat d'un agent avec `GET /api/agents/{id}`. L'Orchestrateur est le point de contact principal : `POST /api/agents/orchestrateur/messages` enregistre une demande, crée une mission `queued` et ajoute un événement d'audit. `GET /api/agents/orchestrateur/messages` relit l'échange. Le worker interne `POST /api/internal/agent-runs/process-next` consomme une mission Orchestrateur, applique le routage déterministe des contrats et crée des sous-missions dans le même workspace. Il ne prétend pas encore être un fournisseur LLM : le branchement du modèle et des workers spécialisés reste à faire.
 
 ## Diffusion des annonces
 
 L'Agent Diffusion est provisionné dans l'équipe. Les comptes de publication sont enregistrés avec `POST /api/diffusion/connexions` et consultables avec `GET /api/diffusion/connexions`. Une connexion reste `a_connecter` jusqu'à ce qu'un connecteur officiel termine son OAuth ou son activation partenaire via `POST /api/internal/diffusion/connexions/{id}/activer`.
 
 La première publication doit être proposée comme une action `publier_annonce`, validée par le propriétaire puis exécutée par le connecteur. L'exécution marque la première publication comme validée. Seulement après cette étape, le propriétaire peut appeler `POST /api/diffusion/connexions/{id}/autoriser-automatique`. Il peut revenir à une validation systématique avec `.../desactiver-automatique` ou révoquer complètement la connexion avec `.../revoquer`.
+
+L'Agent Diffusion crée une mission de publication avec `POST /api/internal/diffusion/publications`. Le job est visible par le propriétaire avec `GET /api/diffusion/publications` et `GET /api/diffusion/publications/{id}`. Une première publication reste `a_valider` jusqu'à l'approbation puis l'exécution de son action. Une publication automatique ultérieure est possible uniquement si la connexion a été autorisée par le propriétaire après cette première exécution ; elle conserve la même frontière d'action et d'audit.
 
 Le backend ne stocke pas de mot de passe et n'appelle encore aucune plateforme réelle. Les références de compte reçues par le canal interne sont conservées sous forme d'empreinte. Toute publication doit utiliser un connecteur autorisé, une action auditée et les permissions de la plateforme concernée.
 
@@ -69,4 +72,4 @@ Le centre de contrôle est disponible sans frontend :
 
 Les routes privées exigent `x-piaule-agent-token` correspondant à `PIAULE_AGENT_INTERNAL_TOKEN`. La clé d'idempotence empêche une proposition rejouée de créer un doublon. La première exécution est un marqueur de test : aucun e-mail, SMS, paiement, calendrier ou publication externe n'est déclenché par ce centre.
 
-Chaque action liée à une mission est aussi contrôlée par le rôle de l'agent. Une capacité absente de sa politique est refusée en `403` et produit un événement `agent_action_bloquee`. La liste actuelle des capacités sert de garde-fou de départ ; les contrats détaillés des agents seront définis ensuite.
+Chaque action liée à une mission est aussi contrôlée par le rôle de l'agent. Une capacité absente de sa politique est refusée en `403` et produit un événement `agent_action_bloquee`. La liste actuelle des capacités et les contrats persistés servent de garde-fou de départ ; les questions de cadrage métier restantes sont listées dans [`docs/API_OWNER_WORKSPACE_CONTRACT.md`](../docs/API_OWNER_WORKSPACE_CONTRACT.md).

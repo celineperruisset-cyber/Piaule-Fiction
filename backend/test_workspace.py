@@ -130,6 +130,185 @@ def test_owner_gets_private_agent_team_and_can_contact_orchestrator():
         assert audit.json()[0]["evenement"] == "demande_orchestrateur_recue"
 
 
+def test_orchestrator_worker_routes_request_into_workspace_submissions():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.AGENT_INTERNAL_TOKEN = "agent-test-token"
+        owner = TestClient(main.app)
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "worker-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert created.status_code == 200
+        workspace_id = created.json()["workspace_id"]
+
+        agents = owner.get("/api/agents")
+        assert agents.status_code == 200
+        orchestrator = next(agent for agent in agents.json() if agent["role"] == "orchestrateur")
+        assert "actions" in orchestrator["contrat"]
+        assert "escalades" in orchestrator["contrat"]
+
+        message = owner.post(
+            "/api/agents/orchestrateur/messages",
+            json={
+                "contenu": "Prépare la publication de mon appartement et vérifie les documents du candidat.",
+                "contexte_type": "bien",
+                "contexte_id": "bien-demo",
+            },
+        )
+        assert message.status_code == 201
+        run_id = message.json()["run_id"]
+
+        processed = owner.post(
+            "/api/internal/agent-runs/process-next",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+        )
+        assert processed.status_code == 200
+        assert processed.json()["traite"] is True
+        assert processed.json()["run_id"] == run_id
+        assert set(processed.json()["missions_enfants"])  # at least one child mission was created
+
+        runs = owner.get("/api/agent-runs")
+        assert runs.status_code == 200
+        run_types = {run["type_agent"] for run in runs.json()}
+        assert "orchestrateur" in run_types
+        assert "agent-diffusion" in run_types
+        assert "agent-conformite" in run_types
+        assert all(run["workspace_id"] == workspace_id for run in runs.json())
+        orchestrator_run = next(run for run in runs.json() if run["id"] == run_id)
+        assert orchestrator_run["statut"] == "completed"
+
+        messages = owner.get("/api/agents/orchestrateur/messages")
+        assert messages.status_code == 200
+        assert any(item["direction"] == "agent" and item["statut"] == "repondu" for item in messages.json())
+
+
+def test_publication_job_requires_first_owner_validation_then_allows_automatic_mode():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.AGENT_INTERNAL_TOKEN = "agent-test-token"
+        owner = TestClient(main.app)
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "publication-job-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert created.status_code == 200
+        workspace_id = created.json()["workspace_id"]
+
+        property_response = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Appartement publication",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue des annonces",
+                "ville": "Lyon",
+            },
+        )
+        assert property_response.status_code == 201
+        property_id = property_response.json()["id"]
+
+        connection = owner.post(
+            "/api/diffusion/connexions",
+            json={"plateforme": "leboncoin", "compte_libelle": "Compte propriétaire"},
+        )
+        assert connection.status_code == 201
+        connection_id = connection.json()["id"]
+        activated = owner.post(
+            f"/api/internal/diffusion/connexions/{connection_id}/activer",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={"reference_compte": "provider-account-ref"},
+        )
+        assert activated.status_code == 200
+
+        run = owner.post(
+            "/api/internal/agent-runs",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={
+                "workspace_id": workspace_id,
+                "type_agent": "agent-diffusion",
+                "mission": "Préparer la publication de l'annonce",
+            },
+        )
+        assert run.status_code == 201
+        run_id = run.json()["id"]
+
+        first_job = owner.post(
+            "/api/internal/diffusion/publications",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={
+                "workspace_id": workspace_id,
+                "connection_id": connection_id,
+                "bien_id": property_id,
+                "titre": "T2 lumineux",
+                "description": "Annonce préparée par l'agent.",
+                "contenu": {"loyer": 800, "ville": "Lyon"},
+                "idempotency_key": "publication-job-first-001",
+                "agent_run_id": run_id,
+            },
+        )
+        assert first_job.status_code == 201
+        first_job_data = first_job.json()
+        assert first_job_data["statut"] == "a_valider"
+        assert first_job_data["premiere_publication"] is True
+        action_id = first_job_data["action_id"]
+
+        approved = owner.post(f"/api/actions/{action_id}/approve", json={"motif": "Annonce relue"})
+        assert approved.status_code == 200
+        assert owner.get(f"/api/diffusion/publications/{first_job_data['id']}").json()["statut"] == "autorisee"
+        executed = owner.post(
+            f"/api/internal/actions/{action_id}/execute",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={"reference_execution": "provider-publication-1", "resultat": {"publiee": True}},
+        )
+        assert executed.status_code == 200
+        assert owner.get(f"/api/diffusion/publications/{first_job_data['id']}").json()["statut"] == "publiee"
+        assert owner.get("/api/diffusion/connexions").json()[0]["premiere_publication_validee_le"]
+
+        automatic = owner.post(f"/api/diffusion/connexions/{connection_id}/autoriser-automatique")
+        assert automatic.status_code == 200
+        assert automatic.json()["mode_publication"] == "automatique"
+
+        second_job = owner.post(
+            "/api/internal/diffusion/publications",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={
+                "workspace_id": workspace_id,
+                "connection_id": connection_id,
+                "bien_id": property_id,
+                "titre": "T2 lumineux mis à jour",
+                "description": "Nouvelle version de l'annonce.",
+                "contenu": {"loyer": 820, "ville": "Lyon"},
+                "publication_automatique": True,
+                "idempotency_key": "publication-job-second-001",
+                "agent_run_id": run_id,
+            },
+        )
+        assert second_job.status_code == 201
+        assert second_job.json()["statut"] == "autorisee"
+        second_action = second_job.json()["action_id"]
+        executed_second = owner.post(
+            f"/api/internal/actions/{second_action}/execute",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={"reference_execution": "provider-publication-2", "resultat": {"publiee": True}},
+        )
+        assert executed_second.status_code == 200
+        assert owner.get(f"/api/diffusion/publications/{second_job.json()['id']}").json()["statut"] == "publiee"
+
+
 def test_publication_auto_requires_first_approved_publication_and_can_be_revoked():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

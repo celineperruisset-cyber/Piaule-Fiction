@@ -243,6 +243,75 @@ OWNER_AGENT_CATALOG: dict[str, dict[str, object]] = {
     },
 }
 
+OWNER_AGENT_CONTRACTS: dict[str, dict[str, object]] = {
+    "orchestrateur": {
+        "entrees": ["demande du propriétaire", "workspace", "contexte optionnel"],
+        "sorties": ["plan", "agents mobilisés", "questions manquantes", "exceptions"],
+        "actions": ["distribuer_mission", "preparer_plan"],
+        "escalades": ["demande ambiguë", "action sensible", "périmètre inconnu"],
+    },
+    "agent-bien": {
+        "entrees": ["informations du bien", "informations du lot", "règles du propriétaire"],
+        "sorties": ["fiche structurée", "champs manquants", "incohérences"],
+        "actions": ["analyser_bien", "preparer_annonce"],
+        "escalades": ["adresse incomplète", "donnée contradictoire", "information réglementaire manquante"],
+    },
+    "agent-diffusion": {
+        "entrees": ["fiche bien validée", "annonce", "connexion de diffusion", "règles de publication"],
+        "sorties": ["brouillon adapté", "statut de publication", "preuve du résultat", "erreur du connecteur"],
+        "actions": ["preparer_publication", "publier_annonce", "retirer_annonce"],
+        "escalades": ["compte non connecté", "première publication", "permission révoquée", "plateforme indisponible"],
+    },
+    "agent-candidatures": {
+        "entrees": ["message entrant", "pièces jointes", "canal de réception", "biens publiés"],
+        "sorties": ["candidature rattachée", "doublon possible", "inbox à vérifier"],
+        "actions": ["analyser_candidature", "rattacher_candidature", "dedoublonner_candidature"],
+        "escalades": ["plusieurs biens possibles", "candidat introuvable", "message suspect"],
+    },
+    "agent-completude": {
+        "entrees": ["candidature", "pièces reçues", "politique documentaire"],
+        "sorties": ["pièces manquantes", "pièces à corriger", "état de complétude", "demande ciblée"],
+        "actions": ["analyser_piece", "recalculer_completude", "preparer_message_candidat", "preparer_relance_completude"],
+        "escalades": ["pièce interdite demandée", "règle inconnue", "candidature impossible à rattacher"],
+    },
+    "agent-confiance": {
+        "entrees": ["documents", "données déclarées", "résultats de contrôles"],
+        "sorties": ["anomalies", "incohérences", "niveau de preuve", "contrôles à approfondir"],
+        "actions": ["analyser_piece", "preparer_verification", "signaler_anomalie"],
+        "escalades": ["suspicion de modification", "preuve officielle nécessaire", "résultat contradictoire"],
+    },
+    "agent-comparaison": {
+        "entrees": ["candidatures complètes", "critères du bien", "preuves disponibles"],
+        "sorties": ["comparaison expliquée", "points favorables", "inconnues", "questions au propriétaire"],
+        "actions": ["comparer_candidatures", "preparer_recommandation"],
+        "escalades": ["critère absent", "critère potentiellement discriminatoire", "dossiers incomparables"],
+    },
+    "agent-visites": {
+        "entrees": ["candidature prête", "créneaux du propriétaire", "préférences de rendez-vous"],
+        "sorties": ["créneaux compatibles", "conflits détectés", "proposition de visite"],
+        "actions": ["proposer_visite", "preparer_rappel_visite"],
+        "escalades": ["aucun créneau", "conflit d’agenda", "candidature incomplète"],
+    },
+    "agent-communication": {
+        "entrees": ["événement à communiquer", "destinataire", "contexte du dossier", "ton configuré"],
+        "sorties": ["message brouillon", "destinataires", "aperçu des données transmises"],
+        "actions": ["preparer_message_candidat", "preparer_rappel_visite"],
+        "escalades": ["destinataire ambigu", "donnée sensible", "envoi externe"],
+    },
+    "agent-conformite": {
+        "entrees": ["demande", "annonce", "pièces demandées", "règles applicables"],
+        "sorties": ["autorisé", "à vérifier", "bloqué", "motif compréhensible"],
+        "actions": ["controler_conformite", "signaler_anomalie"],
+        "escalades": ["règle juridique incertaine", "acte réglementé", "pièce disproportionnée"],
+    },
+    "agent-suivi": {
+        "entrees": ["missions ouvertes", "échéances", "réponses attendues", "statuts"],
+        "sorties": ["prochaines actions", "retards", "rappels préparés"],
+        "actions": ["preparer_tache", "preparer_relance_echeance"],
+        "escalades": ["échéance dépassée", "relance répétée", "blocage sans responsable"],
+    },
+}
+
 
 class AgentRunCreate(BaseModel):
     type_agent: str = Field(min_length=2, max_length=120)
@@ -292,6 +361,7 @@ class OwnerAgent(BaseModel):
     statut: AgentStatus
     principal: bool
     version_politique: str
+    contrat: dict[str, object]
     created_at: str
     updated_at: str
 
@@ -742,6 +812,51 @@ class PublicationConnection(PublicationConnectionCreate):
 
 class InternalPublicationConnectionActivation(BaseModel):
     reference_compte: str = Field(default="", max_length=500)
+
+
+PublicationJobStatus = Literal["brouillon", "a_valider", "autorisee", "publiee", "echec", "retiree", "refusee"]
+
+
+class InternalPublicationJobCreate(BaseModel):
+    workspace_id: str = Field(min_length=3, max_length=160)
+    connection_id: str = Field(min_length=3, max_length=160)
+    bien_id: str = Field(min_length=3, max_length=160)
+    lot_id: str | None = Field(default=None, max_length=160)
+    titre: str = Field(min_length=2, max_length=240)
+    description: str = Field(default="", max_length=10_000)
+    contenu: dict[str, object] = Field(default_factory=dict)
+    publication_automatique: bool = False
+    idempotency_key: str = Field(min_length=8, max_length=180)
+    agent_run_id: str | None = Field(default=None, max_length=160)
+
+
+class PublicationJob(BaseModel):
+    id: str
+    workspace_id: str
+    connection_id: str
+    plateforme: PublicationPlatform
+    compte_libelle: str
+    bien_id: str
+    lot_id: str | None = None
+    titre: str
+    description: str
+    contenu: dict[str, object]
+    statut: PublicationJobStatus
+    publication_automatique: bool
+    premiere_publication: bool
+    action_id: str | None = None
+    reference_externe: str = ""
+    erreur: str = ""
+    created_at: str
+    updated_at: str
+
+
+class AgentWorkerProcessResult(BaseModel):
+    traite: bool
+    run_id: str | None = None
+    statut: AgentRunStatus | None = None
+    missions_enfants: list[str] = Field(default_factory=list)
+    message_reponse_id: str | None = None
 
 
 class InboundApplicationEmail(BaseModel):
@@ -1505,6 +1620,7 @@ def _ensure_database() -> None:
                 status TEXT NOT NULL DEFAULT 'active',
                 is_primary INTEGER NOT NULL DEFAULT 0,
                 policy_version TEXT NOT NULL DEFAULT 'v1',
+                contract_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(workspace_id, role_key),
@@ -1551,6 +1667,35 @@ def _ensure_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS publication_connections_workspace_idx
                 ON publication_connections(workspace_id, created_at);
+            CREATE TABLE IF NOT EXISTS publication_jobs (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                lot_id TEXT,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                content_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'a_valider',
+                automatic INTEGER NOT NULL DEFAULT 0,
+                first_publication INTEGER NOT NULL DEFAULT 0,
+                action_id TEXT,
+                idempotency_key TEXT NOT NULL,
+                external_reference TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(workspace_id, idempotency_key),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(connection_id) REFERENCES publication_connections(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                FOREIGN KEY(lot_id) REFERENCES lots(id) ON DELETE SET NULL,
+                FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS publication_jobs_workspace_idx
+                ON publication_jobs(workspace_id, created_at);
+            CREATE INDEX IF NOT EXISTS publication_jobs_connection_idx
+                ON publication_jobs(connection_id, created_at);
             CREATE TABLE IF NOT EXISTS actions (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -1786,6 +1931,7 @@ def _ensure_database() -> None:
             ("last_error", "TEXT NOT NULL DEFAULT ''"),
         ):
             _ensure_column(connection, "candidate_messages", column, definition)
+        _ensure_column(connection, "workspace_agents", "contract_json", "TEXT NOT NULL DEFAULT '{}'")
 
         # Give legacy accounts a workspace before any workspace-scoped route is used.
         legacy_accounts = connection.execute(
@@ -2080,7 +2226,14 @@ def _create_agent_action(
             raise HTTPException(status_code=409, detail="Cette clé d'idempotence désigne déjà une autre action.")
         return existing, False
 
-    requires_approval = payload.niveau_risque not in {"lecture", "brouillon"}
+    automatic_publication = (
+        payload.type_action == "publier_annonce"
+        and payload.payload.get("publication_automatique") is True
+    )
+    # Automatic publication is allowed only because the owner has already
+    # authorized this specific connection; the connector still audits and
+    # executes the action through the same boundary.
+    requires_approval = payload.niveau_risque not in {"lecture", "brouillon"} and not automatic_publication
     action_status = "a_valider" if requires_approval else "proposee"
     now = _iso_now()
     action_id = f"action-{uuid4().hex[:16]}"
@@ -2198,8 +2351,8 @@ def _provision_workspace_agents(connection: sqlite3.Connection, workspace_id: st
             """
             INSERT OR IGNORE INTO workspace_agents(
                 id, workspace_id, role_key, display_name, description, mission,
-                status, is_primary, policy_version, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, 'v1', ?, ?)
+                status, is_primary, policy_version, contract_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, 'v1', ?, ?, ?)
             """,
             (
                 f"agent-{uuid4().hex[:16]}",
@@ -2209,6 +2362,11 @@ def _provision_workspace_agents(connection: sqlite3.Connection, workspace_id: st
                 str(definition["description"]),
                 str(definition["mission"]),
                 1 if definition["principal"] else 0,
+                _json_object(
+                    OWNER_AGENT_CONTRACTS.get(role_key, {}),
+                    label="Le contrat d'agent",
+                    maximum=20_000,
+                ),
                 now,
                 now,
             ),
@@ -2226,6 +2384,7 @@ def _owner_agent_from_row(row: sqlite3.Row) -> OwnerAgent:
         statut=row["status"],
         principal=bool(row["is_primary"]),
         version_politique=row["policy_version"],
+        contrat=json.loads(row["contract_json"] or "{}"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -2274,6 +2433,80 @@ def _owned_publication_connection_row(
     if row is None:
         raise HTTPException(status_code=404, detail="Connexion de diffusion introuvable dans ce workspace.")
     return row
+
+
+def _publication_job_from_row(row: sqlite3.Row) -> PublicationJob:
+    return PublicationJob(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        connection_id=row["connection_id"],
+        plateforme=row["platform"],
+        compte_libelle=row["account_label"],
+        bien_id=row["property_id"],
+        lot_id=row["lot_id"],
+        titre=row["title"],
+        description=row["description"],
+        contenu=json.loads(row["content_json"] or "{}"),
+        statut=row["status"],
+        publication_automatique=bool(row["automatic"]),
+        premiere_publication=bool(row["first_publication"]),
+        action_id=row["action_id"],
+        reference_externe=row["external_reference"],
+        erreur=row["error"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _owned_publication_job_row(
+    connection: sqlite3.Connection, owner: Candidate, job_id: str
+) -> sqlite3.Row:
+    row = connection.execute(
+        """
+        SELECT j.*, c.platform, c.account_label
+        FROM publication_jobs j
+        JOIN publication_connections c ON c.id = j.connection_id
+        WHERE j.id = ? AND j.workspace_id = ? AND c.workspace_id = ?
+        """,
+        (job_id, owner.workspace_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Publication introuvable dans ce workspace.")
+    return row
+
+
+def _route_orchestrator_request(content: str) -> list[tuple[str, str]]:
+    """Select an initial deterministic plan until an LLM provider is connected."""
+
+    normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFKD", content.casefold())
+        if not unicodedata.combining(character)
+    )
+    routes: list[tuple[str, str]] = []
+
+    def add(role: str, mission: str) -> None:
+        if role not in {existing_role for existing_role, _ in routes}:
+            routes.append((role, mission))
+
+    if any(word in normalized for word in ("bien", "appartement", "maison", "lot", "loyer", "adresse")):
+        add("agent-bien", "Structurer le bien et relever les informations manquantes.")
+    if any(word in normalized for word in ("annonce", "publier", "publication", "leboncoin", "seloger", "pap", "bienici")):
+        add("agent-conformite", "Contrôler les conditions de publication et les informations obligatoires.")
+        add("agent-diffusion", "Préparer la diffusion sur les canaux autorisés du propriétaire.")
+    if any(word in normalized for word in ("candidature", "candidat", "dossier", "piece", "document")):
+        add("agent-candidatures", "Organiser les candidatures et leur rattachement au bon bien.")
+        add("agent-completude", "Analyser la complétude des dossiers et les pièces attendues.")
+        add("agent-confiance", "Relever les incohérences et contrôles documentaires nécessaires.")
+    if any(word in normalized for word in ("compare", "selection", "retenir", "profil")):
+        add("agent-comparaison", "Préparer une comparaison explicable selon les critères configurés.")
+    if any(word in normalized for word in ("visite", "rendez-vous", "rdv", "creneau", "agenda")):
+        add("agent-visites", "Rechercher les créneaux compatibles et préparer une proposition.")
+    if any(word in normalized for word in ("message", "email", "mail", "relance", "contacter")):
+        add("agent-communication", "Préparer le message adapté, sans l'envoyer automatiquement.")
+    if any(word in normalized for word in ("suivi", "echeance", "rappel", "tache")):
+        add("agent-suivi", "Préparer le suivi des échéances et prochaines actions.")
+    return routes
 
 
 def _google_is_configured() -> bool:
@@ -4385,6 +4618,298 @@ def activate_publication_connection(
     return _publication_connection_from_row(updated)
 
 
+@app.get("/api/diffusion/publications", response_model=list[PublicationJob])
+def list_publication_jobs(owner: Candidate = Depends(current_candidate)) -> list[PublicationJob]:
+    """List announcement publication jobs for the current owner."""
+
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            """
+            SELECT j.*, c.platform, c.account_label
+            FROM publication_jobs j
+            JOIN publication_connections c ON c.id = j.connection_id
+            WHERE j.workspace_id = ?
+            ORDER BY j.created_at DESC, j.id DESC
+            """,
+            (owner.workspace_id,),
+        ).fetchall()
+    return [_publication_job_from_row(row) for row in rows]
+
+
+@app.get("/api/diffusion/publications/{job_id}", response_model=PublicationJob)
+def get_publication_job(job_id: str, owner: Candidate = Depends(current_candidate)) -> PublicationJob:
+    with closing(_connect()) as connection:
+        row = _owned_publication_job_row(connection, owner, job_id)
+    return _publication_job_from_row(row)
+
+
+@app.post("/api/internal/diffusion/publications", response_model=PublicationJob, status_code=201)
+def create_publication_job(
+    payload: InternalPublicationJobCreate,
+    request: Request,
+) -> PublicationJob:
+    """Create an announcement job and its audited publication action."""
+
+    _agent_internal_auth(request)
+    if not payload.agent_run_id:
+        raise HTTPException(status_code=422, detail="Une publication doit être rattachée à une mission d'agent Diffusion.")
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        workspace = connection.execute(
+            "SELECT id FROM workspaces WHERE id = ?", (payload.workspace_id,)
+        ).fetchone()
+        if workspace is None:
+            raise HTTPException(status_code=404, detail="Workspace introuvable.")
+        existing = connection.execute(
+            """
+            SELECT j.*, c.platform, c.account_label
+            FROM publication_jobs j
+            JOIN publication_connections c ON c.id = j.connection_id
+            WHERE j.workspace_id = ? AND j.idempotency_key = ?
+            """,
+            (payload.workspace_id, _clean_text(payload.idempotency_key, 180)),
+        ).fetchone()
+        if existing is not None:
+            return _publication_job_from_row(existing)
+        publication_connection = connection.execute(
+            """
+            SELECT * FROM publication_connections
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (payload.connection_id, payload.workspace_id),
+        ).fetchone()
+        if publication_connection is None:
+            raise HTTPException(status_code=404, detail="La connexion de diffusion est introuvable.")
+        if publication_connection["status"] != "active":
+            raise HTTPException(status_code=409, detail="La connexion de diffusion n'est pas active.")
+        first_publication = publication_connection["first_publication_validated_at"] is None
+        if payload.publication_automatique:
+            if first_publication:
+                raise HTTPException(status_code=409, detail="La première publication doit être validée avant l'automatisation.")
+            if publication_connection["publication_mode"] != "automatique":
+                raise HTTPException(status_code=409, detail="La publication automatique n'est pas autorisée pour ce compte.")
+        property_row = connection.execute(
+            "SELECT id FROM properties WHERE id = ? AND workspace_id = ?",
+            (payload.bien_id, payload.workspace_id),
+        ).fetchone()
+        if property_row is None:
+            raise HTTPException(status_code=404, detail="Le bien de la publication est introuvable.")
+        if payload.lot_id:
+            lot_row = connection.execute(
+                "SELECT id FROM lots WHERE id = ? AND property_id = ? AND workspace_id = ?",
+                (payload.lot_id, payload.bien_id, payload.workspace_id),
+            ).fetchone()
+            if lot_row is None:
+                raise HTTPException(status_code=404, detail="Le lot de la publication est introuvable.")
+        job_id = f"publication-job-{uuid4().hex[:16]}"
+        action_payload = {
+            "job_id": job_id,
+            "connection_id": payload.connection_id,
+            "premiere_publication": first_publication,
+            "publication_automatique": payload.publication_automatique,
+        }
+        connection.execute(
+            """
+            INSERT INTO publication_jobs(
+                id, workspace_id, connection_id, property_id, lot_id, title,
+                description, content_json, status, automatic, first_publication,
+                idempotency_key, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                payload.workspace_id,
+                payload.connection_id,
+                payload.bien_id,
+                payload.lot_id,
+                _clean_text(payload.titre, 240),
+                _clean_text(payload.description, 10_000),
+                _json_object(payload.contenu, label="Le contenu de l'annonce", maximum=50_000),
+                "autorisee" if payload.publication_automatique else "a_valider",
+                int(payload.publication_automatique),
+                int(first_publication),
+                _clean_text(payload.idempotency_key, 180),
+                now,
+                now,
+            ),
+        )
+        action_payload_model = InternalAgentActionCreate(
+            workspace_id=payload.workspace_id,
+            agent_run_id=payload.agent_run_id,
+            type_action="publier_annonce",
+            libelle=f"Publier : {_clean_text(payload.titre, 240)}",
+            description="Publier l'annonce via la connexion autorisée du propriétaire.",
+            niveau_risque="transmission",
+            cible_type="publication",
+            cible_id=job_id,
+            bien_id=payload.bien_id,
+            payload=action_payload,
+            idempotency_key=f"publication-action-{payload.idempotency_key}",
+        )
+        action_row, _ = _create_agent_action(
+            connection,
+            workspace_id=payload.workspace_id,
+            payload=action_payload_model,
+            actor_type="agent",
+            actor_id=payload.agent_run_id or "agent-diffusion",
+        )
+        connection.execute(
+            "UPDATE publication_jobs SET action_id = ?, updated_at = ? WHERE id = ?",
+            (action_row["id"], now, job_id),
+        )
+        connection.commit()
+        row = connection.execute(
+            """
+            SELECT j.*, c.platform, c.account_label
+            FROM publication_jobs j
+            JOIN publication_connections c ON c.id = j.connection_id
+            WHERE j.id = ? AND j.workspace_id = ?
+            """,
+            (job_id, payload.workspace_id),
+        ).fetchone()
+    return _publication_job_from_row(row)
+
+
+@app.post("/api/internal/agent-runs/process-next", response_model=AgentWorkerProcessResult)
+def process_next_agent_run(request: Request) -> AgentWorkerProcessResult:
+    """Process one orchestrator mission with deterministic routing until an LLM is connected."""
+
+    _agent_internal_auth(request)
+    with closing(_connect()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            """
+            SELECT * FROM agent_runs
+            WHERE status = 'queued' AND agent_type = 'orchestrateur'
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            connection.commit()
+            return AgentWorkerProcessResult(traite=False)
+
+        now = _iso_now()
+        input_data = json.loads(row["input_json"] or "{}")
+        content = _clean_text(str(input_data.get("contenu", "")), 4000)
+        routes = _route_orchestrator_request(content)
+        child_ids: list[str] = []
+        for role, mission in routes:
+            child_id = f"agent-run-{uuid4().hex[:16]}"
+            child_ids.append(child_id)
+            child_input = {
+                "parent_run_id": row["id"],
+                "demande": content,
+                "contexte_type": input_data.get("contexte_type", ""),
+                "contexte_id": input_data.get("contexte_id", ""),
+            }
+            connection.execute(
+                """
+                INSERT INTO agent_runs(
+                    id, workspace_id, agent_type, mission, target_type, target_id,
+                    status, input_json, output_json, evidence_json, error,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, '{}', '[]', '', ?, ?)
+                """,
+                (
+                    child_id,
+                    row["workspace_id"],
+                    role,
+                    mission,
+                    input_data.get("contexte_type", "workspace"),
+                    input_data.get("contexte_id", row["workspace_id"]),
+                    _json_object(child_input, label="L'entrée de la sous-mission"),
+                    now,
+                    now,
+                ),
+            )
+            _record_audit_event(
+                connection,
+                workspace_id=row["workspace_id"],
+                actor_type="orchestrateur",
+                actor_id="orchestrateur",
+                event_name="sous_mission_agent_creee",
+                entity_type="agent_run",
+                entity_id=child_id,
+                metadata={"parent_run_id": row["id"], "agent_type": role},
+            )
+
+        if routes:
+            response_text = "Mission préparée. Agents mobilisés : " + ", ".join(role for role, _ in routes) + "."
+        else:
+            response_text = "Je peux préparer la mission, mais j’ai besoin de savoir quel bien ou quelle étape tu veux traiter."
+        output = {
+            "mode": "routage_deterministe",
+            "agents_mobilises": [role for role, _ in routes],
+            "missions_enfants": child_ids,
+            "prochaine_etape": "Les sous-missions attendent leur worker spécialisé.",
+        }
+        connection.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'completed', output_json = ?, evidence_json = ?,
+                finished_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'queued'
+            """,
+            (
+                _json_object(output, label="La sortie de l'Orchestrateur"),
+                _json_object(
+                    [{"type": "routage", "source": "contrat_v1", "roles": [role for role, _ in routes]}],
+                    label="Les preuves du routage",
+                ),
+                now,
+                now,
+                row["id"],
+            ),
+        )
+        original_message_id = str(input_data.get("message_id", "")).strip()
+        if original_message_id:
+            connection.execute(
+                """
+                UPDATE agent_messages SET status = 'en_cours', updated_at = ?
+                WHERE id = ? AND workspace_id = ?
+                """,
+                (now, original_message_id, row["workspace_id"]),
+            )
+        response_message_id = f"agent-message-{uuid4().hex[:16]}"
+        orchestrator = connection.execute(
+            """
+            SELECT id FROM workspace_agents
+            WHERE workspace_id = ? AND role_key = 'orchestrateur'
+            """,
+            (row["workspace_id"],),
+        ).fetchone()
+        if orchestrator is None:
+            raise HTTPException(status_code=503, detail="L'Orchestrateur n'est pas provisionné.")
+        connection.execute(
+            """
+            INSERT INTO agent_messages(
+                id, workspace_id, agent_id, agent_run_id, direction, content,
+                status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'agent', ?, 'repondu', ?, ?)
+            """,
+            (response_message_id, row["workspace_id"], orchestrator["id"], row["id"], response_text, now, now),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=row["workspace_id"],
+            actor_type="orchestrateur",
+            actor_id="orchestrateur",
+            event_name="plan_orchestrateur_prepare",
+            entity_type="agent_run",
+            entity_id=row["id"],
+            metadata={"agents_mobilises": [role for role, _ in routes], "mode": "routage_deterministe"},
+        )
+        connection.commit()
+    return AgentWorkerProcessResult(
+        traite=True,
+        run_id=row["id"],
+        statut="completed",
+        missions_enfants=child_ids,
+        message_reponse_id=response_message_id,
+    )
+
+
 @app.get("/api/agent-runs", response_model=list[AgentRun])
 def list_agent_runs(
     statut: AgentRunStatus | None = None,
@@ -4517,6 +5042,29 @@ def _owner_decide_action(
             """,
             (next_status, next_status, now, reason, now, action_id, owner.workspace_id),
         )
+        if row["action_type"] == "publier_annonce":
+            try:
+                publication_payload = json.loads(row["payload_json"] or "{}")
+            except json.JSONDecodeError:
+                publication_payload = {}
+            job_id = str(publication_payload.get("job_id", "")).strip()
+            if job_id:
+                connection.execute(
+                    """
+                    UPDATE publication_jobs
+                    SET status = ?, error = CASE WHEN ? = 'refusee' THEN ? ELSE error END, updated_at = ?
+                    WHERE id = ? AND workspace_id = ? AND action_id = ?
+                    """,
+                    (
+                        "autorisee" if decision == "autorisee" else "refusee",
+                        next_status,
+                        reason,
+                        now,
+                        job_id,
+                        owner.workspace_id,
+                        action_id,
+                    ),
+                )
         connection.execute(
             """
             INSERT INTO approvals(id, workspace_id, action_id, approver_email, decision, reason, created_at)
@@ -4758,6 +5306,14 @@ def execute_action(action_id: str, payload: ActionExecutionUpdate, request: Requ
                 raise HTTPException(status_code=409, detail="La publication automatique n'est pas autorisée pour ce compte.")
             if publication_payload.get("premiere_publication") is True and publication_connection["first_publication_validated_at"]:
                 raise HTTPException(status_code=409, detail="La première publication de ce compte est déjà enregistrée.")
+            job_id = str(publication_payload.get("job_id", "")).strip()
+            if job_id:
+                job = connection.execute(
+                    "SELECT id FROM publication_jobs WHERE id = ? AND workspace_id = ? AND action_id = ?",
+                    (job_id, row["workspace_id"], action_id),
+                ).fetchone()
+                if job is None:
+                    raise HTTPException(status_code=404, detail="La mission de publication est introuvable.")
         result_json = _json_object(payload.resultat, label="Le résultat d'exécution", maximum=20_000)
         reference = _clean_text(payload.reference_execution, 240)
         connection.execute(
@@ -4769,7 +5325,7 @@ def execute_action(action_id: str, payload: ActionExecutionUpdate, request: Requ
             """,
             (now, reference, now, action_id),
         )
-        if publication_payload.get("premiere_publication") is True:
+        if publication_payload.get("premiere_publication") is True and payload.resultat.get("publiee", True) is not False:
             connection_id = str(publication_payload["connection_id"])
             connection.execute(
                 """
@@ -4790,6 +5346,26 @@ def execute_action(action_id: str, payload: ActionExecutionUpdate, request: Requ
                 property_id=row["property_id"],
                 metadata={"action_id": action_id, "reference_execution": reference},
             )
+        if row["action_type"] == "publier_annonce":
+            job_id = str(publication_payload.get("job_id", "")).strip()
+            if job_id:
+                publication_succeeded = payload.resultat.get("publiee", True) is not False
+                connection.execute(
+                    """
+                    UPDATE publication_jobs
+                    SET status = ?, external_reference = ?, error = ?, updated_at = ?
+                    WHERE id = ? AND workspace_id = ? AND action_id = ?
+                    """,
+                    (
+                        "publiee" if publication_succeeded else "echec",
+                        reference,
+                        _clean_text(str(payload.resultat.get("erreur", "")), 4000),
+                        now,
+                        job_id,
+                        row["workspace_id"],
+                        action_id,
+                    ),
+                )
         _record_audit_event(
             connection,
             workspace_id=row["workspace_id"],
