@@ -66,6 +66,7 @@ DOSSIER_FACILE_PROFILE_URL = os.getenv("PIAULE_DOSSIER_FACILE_PROFILE_URL", "").
 DOSSIER_FACILE_REDIRECT_URI = os.getenv("PIAULE_DOSSIER_FACILE_REDIRECT_URI", "").strip()
 DOSSIER_FACILE_WEBHOOK_TOKEN = os.getenv("PIAULE_DOSSIER_FACILE_WEBHOOK_TOKEN", "").strip()
 DOSSIER_FACILE_STATE_SECONDS = 600
+VERIFICATION_INTERNAL_TOKEN = os.getenv("PIAULE_VERIFICATION_INTERNAL_TOKEN", "").strip()
 CANDIDATE_PORTAL_BASE_URL = os.getenv(
     "PIAULE_CANDIDATE_PORTAL_BASE_URL",
     "http://127.0.0.1:5173/candidature.html",
@@ -126,6 +127,24 @@ class WorkspaceMember(BaseModel):
     joined_at: str
 
 
+VerificationPolicy = Literal["standard", "renforcee", "officielle"]
+VerificationSource = Literal[
+    "employeur",
+    "dossier_facile",
+    "france_identite",
+    "dgfip",
+    "revue_humaine",
+]
+VerificationRequestStatus = Literal[
+    "en_attente_consentement",
+    "en_attente_source",
+    "confirmee",
+    "non_confirmee",
+    "expiree",
+    "annulee",
+]
+
+
 class PropertyCreate(BaseModel):
     nom: str = Field(min_length=2, max_length=120)
     type: Literal["immeuble", "maison", "appartement", "autre"] = "immeuble"
@@ -148,6 +167,7 @@ class PropertyCreate(BaseModel):
     syndic_email: str = Field(default="", max_length=254)
     syndic_telephone: str = Field(default="", max_length=30)
     tantiemes_total: float | None = Field(default=None, ge=0, le=1_000_000)
+    politique_verification: VerificationPolicy = "standard"
 
 
 class Property(PropertyCreate):
@@ -156,6 +176,18 @@ class Property(PropertyCreate):
     lots_count: int = 0
     created_at: str
     updated_at: str
+
+
+class VerificationPolicyUpdate(BaseModel):
+    politique: VerificationPolicy
+
+
+class PropertyVerificationPolicy(BaseModel):
+    bien_id: str
+    politique: VerificationPolicy
+    sources_disponibles: list[str]
+    regles: list[str]
+    mis_a_jour_le: str
 
 
 class LotCreate(BaseModel):
@@ -381,6 +413,7 @@ ApplicationDocumentStatus = Literal[
 ApplicationDocumentVerificationLevel = Literal[
     "non_verifie",
     "controles_techniques",
+    "source_partenaire",
     "revue_humaine",
     "source_officielle",
 ]
@@ -435,6 +468,27 @@ class ApplicationDocumentCheck(BaseModel):
 class ApplicationDocumentAnalysisResult(BaseModel):
     document: ApplicationDocument
     dernier_controle: ApplicationDocumentCheck
+
+
+class ApplicationVerificationRequestCreate(BaseModel):
+    source: VerificationSource
+    motif: str = Field(default="", max_length=500)
+
+
+class ApplicationVerificationRequest(BaseModel):
+    id: str
+    candidature_id: str
+    document_id: str
+    source: VerificationSource
+    statut: VerificationRequestStatus
+    motif: str
+    consentement_requis: bool
+    consentement_donne_le: str | None = None
+    preuve: dict[str, object]
+    resultat: str
+    expire_le: str | None = None
+    cree_le: str
+    mis_a_jour_le: str
 
 
 class CompletenessItem(BaseModel):
@@ -734,6 +788,7 @@ def _ensure_database() -> None:
                 syndic_email TEXT NOT NULL DEFAULT '',
                 syndic_telephone TEXT NOT NULL DEFAULT '',
                 tantiemes_total REAL,
+                verification_policy TEXT NOT NULL DEFAULT 'standard',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
@@ -949,6 +1004,29 @@ def _ensure_database() -> None:
                 FOREIGN KEY(document_id) REFERENCES application_documents(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS application_document_checks_document_idx ON application_document_checks(document_id, created_at);
+            CREATE TABLE IF NOT EXISTS application_verification_requests (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL,
+                motif TEXT NOT NULL DEFAULT '',
+                consent_given_at TEXT,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                result_summary TEXT NOT NULL DEFAULT '',
+                external_reference_hash TEXT NOT NULL DEFAULT '',
+                expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE,
+                FOREIGN KEY(document_id) REFERENCES application_documents(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS application_verification_requests_application_idx
+                ON application_verification_requests(application_id, created_at);
+            CREATE INDEX IF NOT EXISTS application_verification_requests_document_idx
+                ON application_verification_requests(document_id, created_at);
             CREATE TABLE IF NOT EXISTS candidate_access_links (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -1112,6 +1190,7 @@ def _ensure_database() -> None:
             ("syndic_email", "TEXT NOT NULL DEFAULT ''"),
             ("syndic_telephone", "TEXT NOT NULL DEFAULT ''"),
             ("tantiemes_total", "REAL"),
+            ("verification_policy", "TEXT NOT NULL DEFAULT 'standard'"),
         ):
             _ensure_column(connection, "properties", column, definition)
         for column, definition in (
@@ -1413,6 +1492,7 @@ def _property_from_row(row: sqlite3.Row) -> Property:
         syndic_email=row["syndic_email"],
         syndic_telephone=row["syndic_telephone"],
         tantiemes_total=row["tantiemes_total"],
+        politique_verification=row["verification_policy"],
         lots_count=row["lots_count"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -1872,6 +1952,24 @@ def _application_document_check_from_row(row: sqlite3.Row) -> ApplicationDocumen
     )
 
 
+def _application_verification_request_from_row(row: sqlite3.Row) -> ApplicationVerificationRequest:
+    return ApplicationVerificationRequest(
+        id=row["id"],
+        candidature_id=row["application_id"],
+        document_id=row["document_id"],
+        source=row["source"],
+        statut=row["status"],
+        motif=row["motif"],
+        consentement_requis=row["source"] != "revue_humaine",
+        consentement_donne_le=row["consent_given_at"],
+        preuve=json.loads(row["evidence_json"] or "{}"),
+        resultat=row["result_summary"],
+        expire_le=row["expires_at"],
+        cree_le=row["created_at"],
+        mis_a_jour_le=row["updated_at"],
+    )
+
+
 def _candidate_message_from_row(row: sqlite3.Row) -> CandidateMessage:
     return CandidateMessage(
         id=row["id"],
@@ -2113,7 +2211,7 @@ def _document_preflight(
         new_status = "en_verification"
 
     previous_level = row["verification_level"]
-    if not anomalies and previous_level in {"revue_humaine", "source_officielle"}:
+    if not anomalies and previous_level in {"revue_humaine", "source_partenaire", "source_officielle"}:
         new_status = row["statut"]
         verification_level = previous_level
     else:
@@ -2374,6 +2472,7 @@ def _clean_property_payload(payload: PropertyCreate) -> PropertyCreate:
         syndic_email=_normalise_email(payload.syndic_email) if payload.syndic_email else "",
         syndic_telephone=_clean_text(payload.syndic_telephone, 30),
         tantiemes_total=payload.tantiemes_total,
+        politique_verification=payload.politique_verification,
     )
     if len(cleaned.nom) < 2 or len(cleaned.adresse_ligne1) < 3 or len(cleaned.ville) < 2:
         raise HTTPException(status_code=400, detail="Le nom, l'adresse et la ville sont obligatoires.")
@@ -2938,9 +3037,9 @@ def create_property(
                 adresse_ligne2, code_postal, ville, pays, description, description_publique,
                 statut, date_disponibilite, mode_detention, adresse_exacte_visible,
                 equipements_json, photos_json, tags_json, syndic_nom, syndic_email,
-                syndic_telephone, tantiemes_total,
+                syndic_telephone, tantiemes_total, verification_policy,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
             """,
             (
                 property_id,
@@ -2966,6 +3065,7 @@ def create_property(
                 cleaned.syndic_email,
                 cleaned.syndic_telephone,
                 cleaned.tantiemes_total,
+                cleaned.politique_verification,
             ),
         )
         connection.commit()
@@ -3000,7 +3100,7 @@ def update_property(
                 code_postal = ?, ville = ?, pays = ?, description = ?, description_publique = ?,
                 statut = ?, date_disponibilite = ?, mode_detention = ?, adresse_exacte_visible = ?,
                 equipements_json = ?, photos_json = ?, tags_json = ?, syndic_nom = ?, syndic_email = ?,
-                syndic_telephone = ?, tantiemes_total = ?, updated_at = datetime('now')
+                syndic_telephone = ?, tantiemes_total = ?, verification_policy = ?, updated_at = datetime('now')
             WHERE id = ? AND workspace_id = ?
             """,
             (
@@ -3025,6 +3125,7 @@ def update_property(
                 cleaned.syndic_email,
                 cleaned.syndic_telephone,
                 cleaned.tantiemes_total,
+                cleaned.politique_verification,
                 property_id,
                 owner.workspace_id,
             ),
@@ -3032,6 +3133,73 @@ def update_property(
         connection.commit()
         row = _owned_property_row(connection, owner, property_id)
     return _property_from_row(row)
+
+
+VERIFICATION_POLICY_RULES: dict[str, list[str]] = {
+    "standard": [
+        "contrôles techniques et cohérence entre pièces",
+        "aucune confirmation externe obligatoire",
+    ],
+    "renforcee": [
+        "contrôles techniques et cohérence entre pièces",
+        "attestation employeur ou confirmation ciblée si nécessaire",
+        "validation humaine pour les exceptions",
+    ],
+    "officielle": [
+        "preuve officielle demandée lorsque le document le permet",
+        "DossierFacile, France Identité ou DGFiP selon le type de pièce",
+        "validation humaine si aucune source officielle n'est disponible",
+    ],
+}
+VERIFICATION_POLICY_SOURCES: dict[str, list[str]] = {
+    "standard": ["controle_local", "revue_humaine"],
+    "renforcee": ["controle_local", "employeur", "dossier_facile", "revue_humaine"],
+    "officielle": [
+        "controle_local",
+        "employeur",
+        "dossier_facile",
+        "france_identite",
+        "dgfip",
+        "revue_humaine",
+    ],
+}
+
+
+def _property_verification_policy_from_row(row: sqlite3.Row) -> PropertyVerificationPolicy:
+    policy = row["verification_policy"] or "standard"
+    return PropertyVerificationPolicy(
+        bien_id=row["id"],
+        politique=policy,
+        sources_disponibles=VERIFICATION_POLICY_SOURCES[policy],
+        regles=VERIFICATION_POLICY_RULES[policy],
+        mis_a_jour_le=row["updated_at"],
+    )
+
+
+@app.get("/api/biens/{property_id}/politique-verification", response_model=PropertyVerificationPolicy)
+def get_property_verification_policy(
+    property_id: str, owner: Candidate = Depends(current_candidate)
+) -> PropertyVerificationPolicy:
+    with closing(_connect()) as connection:
+        row = _owned_property_row(connection, owner, property_id)
+    return _property_verification_policy_from_row(row)
+
+
+@app.put("/api/biens/{property_id}/politique-verification", response_model=PropertyVerificationPolicy)
+def update_property_verification_policy(
+    property_id: str,
+    payload: VerificationPolicyUpdate,
+    owner: Candidate = Depends(current_candidate),
+) -> PropertyVerificationPolicy:
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        connection.execute(
+            "UPDATE properties SET verification_policy = ?, updated_at = datetime('now') WHERE id = ? AND workspace_id = ?",
+            (payload.politique, property_id, owner.workspace_id),
+        )
+        connection.commit()
+        row = _owned_property_row(connection, owner, property_id)
+    return _property_verification_policy_from_row(row)
 
 
 @app.get("/api/biens/{property_id}/lots", response_model=list[Lot])
@@ -4603,6 +4771,230 @@ def list_application_document_checks(
             (owner.workspace_id, application_id, document_id),
         ).fetchall()
     return [_application_document_check_from_row(row) for row in rows]
+
+
+def _verification_source_allowed(policy: str, source: str) -> bool:
+    return source in VERIFICATION_POLICY_SOURCES.get(policy, [])
+
+
+@app.post(
+    "/api/biens/{property_id}/candidatures/{application_id}/pieces/{document_id}/verifications",
+    response_model=ApplicationVerificationRequest,
+    status_code=201,
+)
+def create_application_verification_request(
+    property_id: str,
+    application_id: str,
+    document_id: str,
+    payload: ApplicationVerificationRequestCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> ApplicationVerificationRequest:
+    """Create a consent-gated verification request without claiming an external result."""
+
+    with closing(_connect()) as connection:
+        property_row = _owned_property_row(connection, owner, property_id)
+        _application_for_owner(connection, owner, property_id, application_id)
+        _owned_application_document_row(connection, owner, property_id, application_id, document_id)
+        policy = property_row["verification_policy"] or "standard"
+        if not _verification_source_allowed(policy, payload.source):
+            raise HTTPException(
+                status_code=409,
+                detail=f"La source {payload.source} n'est pas incluse dans la politique {policy} de ce bien.",
+            )
+        existing = connection.execute(
+            """
+            SELECT * FROM application_verification_requests
+            WHERE workspace_id = ? AND application_id = ? AND document_id = ?
+              AND source = ? AND status IN ('en_attente_consentement', 'en_attente_source')
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (owner.workspace_id, application_id, document_id, payload.source),
+        ).fetchone()
+        if existing is not None:
+            return _application_verification_request_from_row(existing)
+        request_id = f"verification-request-{uuid4().hex[:16]}"
+        motif = _clean_text(payload.motif, 500)
+        connection.execute(
+            """
+            INSERT INTO application_verification_requests(
+                id, workspace_id, application_id, document_id, source, status,
+                motif, evidence_json, result_summary, expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'en_attente_consentement', ?, '{}', '',
+                      datetime('now', '+30 days'), datetime('now'), datetime('now'))
+            """,
+            (request_id, owner.workspace_id, application_id, document_id, payload.source, motif),
+        )
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM application_verification_requests WHERE id = ?",
+            (request_id,),
+        ).fetchone()
+    return _application_verification_request_from_row(row)
+
+
+@app.get(
+    "/api/biens/{property_id}/candidatures/{application_id}/verifications",
+    response_model=list[ApplicationVerificationRequest],
+)
+def list_application_verification_requests(
+    property_id: str,
+    application_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> list[ApplicationVerificationRequest]:
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        rows = connection.execute(
+            """
+            SELECT * FROM application_verification_requests
+            WHERE workspace_id = ? AND application_id = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (owner.workspace_id, application_id),
+        ).fetchall()
+    return [_application_verification_request_from_row(row) for row in rows]
+
+
+class CandidateVerificationConsent(BaseModel):
+    accepte: bool
+
+
+class ExternalVerificationResult(BaseModel):
+    statut: Literal["confirmee", "non_confirmee"]
+    resultat: str = Field(min_length=1, max_length=2000)
+    preuve: dict[str, object] = Field(default_factory=dict)
+    reference_externe: str = Field(default="", max_length=300)
+
+
+@app.post(
+    "/api/candidature-acces/{token}/verifications/{request_id}/consentement",
+    response_model=ApplicationVerificationRequest,
+)
+def candidate_verification_consent(
+    token: str,
+    request_id: str,
+    payload: CandidateVerificationConsent,
+) -> ApplicationVerificationRequest:
+    """Record candidate consent; an external provider must still return the proof."""
+
+    access = _active_candidate_access_row(token)
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM application_verification_requests
+            WHERE id = ? AND workspace_id = ? AND application_id = ?
+            """,
+            (request_id, access["workspace_id"], access["application_id"]),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Demande de vérification introuvable.")
+        if row["status"] not in {"en_attente_consentement", "en_attente_source"}:
+            return _application_verification_request_from_row(row)
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        if payload.accepte:
+            status_value = "en_attente_source"
+            evidence = {"consentement": "candidat_portail", "consenti_le": now}
+            result = "Consentement reçu ; preuve externe attendue."
+        else:
+            status_value = "annulee"
+            evidence = {"consentement": "refuse"}
+            result = "Le candidat n'a pas autorisé cette vérification."
+        connection.execute(
+            """
+            UPDATE application_verification_requests
+            SET status = ?, consent_given_at = ?, evidence_json = ?, result_summary = ?, updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (
+                status_value,
+                now if payload.accepte else None,
+                json.dumps(evidence, ensure_ascii=False),
+                result,
+                request_id,
+            ),
+        )
+        connection.commit()
+        updated = connection.execute(
+            "SELECT * FROM application_verification_requests WHERE id = ?",
+            (request_id,),
+        ).fetchone()
+    return _application_verification_request_from_row(updated)
+
+
+@app.post("/api/internal/verifications/{request_id}/result", response_model=ApplicationVerificationRequest)
+def apply_external_verification_result(
+    request_id: str,
+    payload: ExternalVerificationResult,
+    request: Request,
+) -> ApplicationVerificationRequest:
+    """Store a provider result; this route never invents a source confirmation."""
+
+    if not VERIFICATION_INTERNAL_TOKEN:
+        raise HTTPException(status_code=503, detail="Le canal de vérification externe n'est pas configuré.")
+    received_token = request.headers.get("x-piaule-verification-token", "")
+    if not hmac.compare_digest(received_token, VERIFICATION_INTERNAL_TOKEN):
+        raise HTTPException(status_code=401, detail="Jeton de vérification externe invalide.")
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT * FROM application_verification_requests WHERE id = ?",
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Demande de vérification introuvable.")
+        if row["status"] not in {"en_attente_source", "en_attente_consentement"}:
+            return _application_verification_request_from_row(row)
+        if row["source"] != "revue_humaine" and row["status"] != "en_attente_source":
+            raise HTTPException(status_code=409, detail="Le consentement du candidat est requis avant cette vérification.")
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        evidence = dict(payload.preuve)
+        evidence["source"] = row["source"]
+        evidence["recu_le"] = now
+        document_level = (
+            "source_officielle"
+            if row["source"] in {"dossier_facile", "france_identite", "dgfip"}
+            else "source_partenaire"
+        )
+        document_status = "valide" if payload.statut == "confirmee" else "a_corriger"
+        connection.execute(
+            """
+            UPDATE application_verification_requests
+            SET status = ?, evidence_json = ?, result_summary = ?,
+                external_reference_hash = ?, updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (
+                payload.statut,
+                json.dumps(evidence, ensure_ascii=False),
+                _clean_text(payload.resultat, 2000),
+                hashlib.sha256(payload.reference_externe.encode("utf-8")).hexdigest()
+                if payload.reference_externe
+                else "",
+                request_id,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE application_documents
+            SET statut = ?, verification_level = ?, note_verification = ?,
+                checked_at = ?, verification_engine_version = ?, updated_at = datetime('now')
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (
+                document_status,
+                document_level if payload.statut == "confirmee" else "non_verifie",
+                _clean_text(payload.resultat, 2000),
+                now,
+                f"provider-{row['source']}-v1",
+                row["document_id"],
+                row["workspace_id"],
+            ),
+        )
+        _refresh_application_status(connection, row["workspace_id"], row["application_id"])
+        connection.commit()
+        updated = connection.execute(
+            "SELECT * FROM application_verification_requests WHERE id = ?",
+            (request_id,),
+        ).fetchone()
+    return _application_verification_request_from_row(updated)
 
 
 @app.get(

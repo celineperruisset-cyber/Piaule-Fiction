@@ -80,6 +80,8 @@ Le connecteur reste désactivé par défaut. DossierFacile exige un partenariat,
 
 ## Pièces et complétude d’une candidature
 
+Chaque bien possède une politique de preuve documentaire : `standard`, `renforcee` ou `officielle`. Elle se lit et se modifie avec `GET/PUT /api/biens/{id}/politique-verification`. Elle définit les sources que l'agent peut proposer, mais ne permet pas de demander une pièce interdite par la réglementation. La politique est choisie au niveau du bien et s'applique de la même manière à ses candidatures.
+
 Les pièces sont rattachées à la candidature, au bien et au workspace. Les cinq catégories minimales suivies par le moteur sont `identite`, `domicile`, `situation_professionnelle`, `ressources` et `imposition`. `garant` et `autre` sont disponibles en complément.
 
 Les routes sont :
@@ -89,6 +91,10 @@ Les routes sont :
 - `PUT /api/biens/{id}/candidatures/{application_id}/pieces/{document_id}/verification` pour changer le statut de vérification ;
 - `POST /api/biens/{id}/candidatures/{application_id}/pieces/{document_id}/analyser` pour lancer les contrôles techniques ;
 - `GET /api/biens/{id}/candidatures/{application_id}/pieces/{document_id}/controles` pour consulter les contrôles effectués ;
+- `POST /api/biens/{id}/candidatures/{application_id}/pieces/{document_id}/verifications` pour préparer une demande de preuve externe ;
+- `GET /api/biens/{id}/candidatures/{application_id}/verifications` pour suivre les demandes de preuve ;
+- `POST /api/candidature-acces/{token}/verifications/{request_id}/consentement` pour recueillir le consentement du candidat ;
+- `POST /api/internal/verifications/{request_id}/result` pour recevoir le résultat signé d'un connecteur, avec `x-piaule-verification-token` ;
 - `GET /api/biens/{id}/candidatures/{application_id}/completude` pour lire le résultat ;
 - `POST /api/biens/{id}/candidatures/{application_id}/verifier` pour recalculer et synchroniser le statut de la candidature.
 
@@ -96,7 +102,9 @@ Une pièce conserve son type, sa provenance (`email`, `dossier_facile`, `portail
 
 Le moteur de pré-vérification est déterministe : il vérifie la présence du fichier, sa taille stockée, l'accord extension/MIME, sa signature PDF/JPG/PNG, sa date d'expiration, les doublons dans le dossier et une éventuelle incompatibilité probable entre le nom du fichier et la catégorie déclarée. Une anomalie bloque ou place la pièce `a_corriger`; un contrôle technique réussi la place `en_verification`, jamais `valide` automatiquement. Le moteur conserve chaque résultat et sa version.
 
-La pré-vérification locale ne certifie pas l'authenticité d'un document, l'identité du candidat, ses revenus ou l'absence de retouche. Ces éléments sont signalés comme `non_verifiable_localement` tant qu'aucun extracteur contrôlé, source officielle ou examinateur humain n'a fourni une preuve. Un dossier DossierFacile officiellement vérifié peut couvrir les catégories requises avec la mention `verifiee_par_dossier_facile`, sans recopier les documents originaux dans Piaule Fiction.
+La pré-vérification locale ne certifie pas l'authenticité d'un document, l'identité du candidat, ses revenus ou l'absence de retouche. Ces éléments sont signalés comme `non_verifiable_localement` tant qu'aucun extracteur contrôlé, source officielle ou examinateur humain n'a fourni une preuve. Les niveaux de preuve disponibles sont `non_verifie`, `controles_techniques`, `source_partenaire`, `revue_humaine` et `source_officielle`. Un dossier DossierFacile officiellement vérifié peut couvrir les catégories requises avec la mention `verifiee_par_dossier_facile`, sans recopier les documents originaux dans Piaule Fiction.
+
+Une demande vers France Identité, la DGFiP, DossierFacile ou un employeur commence par `en_attente_consentement`. Après accord depuis le portail candidat, elle passe à `en_attente_source`. Le backend n'accorde le niveau `source_officielle` ou `source_partenaire` qu'après réception d'un résultat par le canal interne authentifié ; il ne simule aucune réponse de fournisseur.
 
 Le dépôt exposé dans cette première tranche est protégé par la session propriétaire. Le lien candidat sécurisé et le dépôt autonome depuis l’espace candidat seront ajoutés sur cette même table, afin de ne pas créer un second modèle documentaire.
 

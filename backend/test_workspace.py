@@ -55,6 +55,101 @@ def test_owner_account_creates_isolated_workspace_and_metadata():
         assert anonymous.get("/api/workspace").status_code == 401
 
 
+def test_verification_policy_and_external_proof_are_consent_gated():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.VERIFICATION_INTERNAL_TOKEN = "verification-test-token"
+        owner = TestClient(main.app)
+        assert owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "verification-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        ).status_code == 200
+
+        property_response = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien vérification",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue des preuves",
+                "ville": "Lyon",
+                "politique_verification": "renforcee",
+            },
+        )
+        assert property_response.status_code == 201
+        property_id = property_response.json()["id"]
+        assert property_response.json()["politique_verification"] == "renforcee"
+
+        switched = owner.put(
+            f"/api/biens/{property_id}/politique-verification",
+            json={"politique": "officielle"},
+        )
+        assert switched.status_code == 200
+        assert "france_identite" in switched.json()["sources_disponibles"]
+
+        application = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Demo",
+                "candidat_email": "alex-verification@example.test",
+                "source": "email",
+            },
+        )
+        assert application.status_code == 201
+        application_id = application.json()["id"]
+        uploaded = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
+            data={"nom": "Identité", "type": "identite"},
+            files={"file": ("identite.pdf", b"%PDF-identity", "application/pdf")},
+        )
+        assert uploaded.status_code == 201
+        document_id = uploaded.json()["id"]
+
+        request_response = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces/{document_id}/verifications",
+            json={"source": "france_identite", "motif": "Confirmer l'identité du candidat"},
+        )
+        assert request_response.status_code == 201
+        request_id = request_response.json()["id"]
+        assert request_response.json()["statut"] == "en_attente_consentement"
+
+        link = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/lien-candidat"
+        )
+        token = link.json()["url"].split("?access=", 1)[1]
+        consent = owner.post(
+            f"/api/candidature-acces/{token}/verifications/{request_id}/consentement",
+            json={"accepte": True},
+        )
+        assert consent.status_code == 200
+        assert consent.json()["statut"] == "en_attente_source"
+
+        result = owner.post(
+            f"/api/internal/verifications/{request_id}/result",
+            headers={"x-piaule-verification-token": "verification-test-token"},
+            json={
+                "statut": "confirmee",
+                "resultat": "Justificatif confirmé par la source officielle.",
+                "preuve": {"type": "identite", "signature": "valide"},
+                "reference_externe": "provider-reference-1",
+            },
+        )
+        assert result.status_code == 200
+        assert result.json()["statut"] == "confirmee"
+        document = owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces"
+        ).json()[0]
+        assert document["niveau_verification"] == "source_officielle"
+        assert document["statut"] == "valide"
+
+
 def test_password_reset_token_is_single_use():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
