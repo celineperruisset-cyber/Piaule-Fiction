@@ -367,6 +367,8 @@ function cptSetMode(m){
   cptF.mdp.autocomplete = login ? "current-password" : "new-password";
   cptF.mdp.placeholder = login ? "Ton mot de passe" : "8 caractères minimum";
   $("cpt-gol").textContent = login ? "Me connecter" : "Créer mon compte";
+  $("forgot-go").hidden = !login;
+  $("reset-f").hidden = true;
   $("cpt-swt").textContent = login ? "Pas encore de compte ?" : "Déjà un compte ?";
   $("cpt-sw").textContent = login ? "Créer un compte" : "Se connecter";
   $("cpt-err").hidden = true;
@@ -392,6 +394,17 @@ esp.addEventListener("click", e => { if (e.target === esp) closeEsp(); });
 addEventListener("keydown", e => { if (e.key === "Escape") closeEsp(); });
 $("esp-go").addEventListener("click", () => { closeEsp(); goTo(1); });
 $("cpt-sw").addEventListener("click", () => { cptSetMode(cptMode === "creer" ? "connexion" : "creer"); (cptMode === "creer" ? cptF.prenom : cptF.email).focus(); });
+$("forgot-go").addEventListener("click", () => { $("reset-f").hidden = false; $("reset-email").focus(); });
+$("reset-f").addEventListener("submit", async e => {
+  e.preventDefault();
+  const email = $("reset-email").value.trim(), prenom = $("reset-prenom").value.trim(), msg = $("reset-msg");
+  msg.hidden = false; msg.textContent = "Préparation du lien…";
+  try {
+    const r = await fetch("api/mot-de-passe-oublie", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({email, prenom})});
+    const j = await r.json().catch(() => ({}));
+    msg.textContent = r.ok ? (j.message || "Si les informations correspondent, un lien sera envoyé.") : (j.detail || "Impossible de préparer le lien.");
+  } catch (x) { msg.textContent = "Le serveur ne répond pas. Réessaie dans un instant."; }
+});
 $("cpt-eye").addEventListener("click", e => {
   const on = cptF.mdp.type === "password"; cptF.mdp.type = on ? "text" : "password";
   e.currentTarget.setAttribute("aria-pressed", String(on));

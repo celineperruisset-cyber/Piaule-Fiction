@@ -15,6 +15,8 @@ Le compte sert à isoler un workspace propriétaire et les personnes expliciteme
 - `GET /api/agents/runs` : activité et preuves ;
 - `GET /api/audit` : journal filtré par workspace.
 
+Authentification externe : `GET /api/auth/google/start` et `GET /api/auth/google/callback` utilisent Google OpenID Connect avec `openid email profile`. Aucun scope Gmail n’est demandé. Récupération de compte : `POST /api/mot-de-passe-oublie` prépare un lien à usage unique, puis `POST /api/mot-de-passe-reinitialiser` change le mot de passe et révoque les sessions.
+
 ## Règles
 
 Chaque route vérifie l’identité, le workspace, le rôle et la permission. Une route de lecture ne doit jamais être utilisée pour déclencher une transmission. Les actions sensibles exigent un aperçu idempotent, une confirmation et un événement d’audit.

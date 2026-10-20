@@ -487,6 +487,17 @@
       <p class="wl-err" id="cpt-err" role="alert" hidden></p>
       <button class="btn wl-go" id="cpt-go" type="submit"><span id="cpt-gol">Créer mon compte</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
     </form>
+    <div class="cpt-options">
+      <a class="wl-alt" id="google-go" href="api/auth/google/start">Continuer avec Google</a>
+      <button class="wl-alt" id="forgot-go" type="button" hidden>Mot de passe oublié ?</button>
+    </div>
+    <form class="reset-f" id="reset-f" hidden>
+      <p>Indique ton e-mail et ton prénom. Si les informations correspondent, un lien temporaire sera envoyé.</p>
+      <input id="reset-email" type="email" placeholder="toi@exemple.fr" autocomplete="email">
+      <input id="reset-prenom" type="text" placeholder="Ton prénom" autocomplete="given-name">
+      <button class="btn" type="submit">Recevoir le lien</button>
+      <p class="wl-err" id="reset-msg" role="status" hidden></p>
+    </form>
     <p class="cpt-sw"><span id="cpt-swt">Déjà un compte ?</span> <button type="button" id="cpt-sw">Se connecter</button></p>
     <button class="wl-alt" id="esp-go" type="button">Voir d'abord comment ça marche</button>
   </div>

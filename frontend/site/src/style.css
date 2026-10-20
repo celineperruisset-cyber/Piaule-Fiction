@@ -1288,6 +1288,12 @@ html.ouv-pin:not(.ouv-hold) .ouv,html.ouv-pin:not(.ouv-hold) .ouv *{pointer-even
 .cpt-eye svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.6}
 .cpt-eye[aria-pressed="true"]{color:var(--blue-l)}
 .cpt .wl-go{gap:10px}
+.cpt-options{display:flex;justify-content:center;gap:16px;flex-wrap:wrap}
+.cpt-options .wl-alt{margin:0}
+.reset-f{display:grid;gap:9px;padding:13px;border:1px solid rgba(185,198,255,.22);border-radius:14px;background:rgba(54,83,217,.1)}
+.reset-f p{margin:0;font-size:12.5px;line-height:1.45;color:rgba(238,239,244,.75)}
+.reset-f input{width:100%;padding:11px 12px;border-radius:10px;border:1px solid rgba(238,239,244,.2);background:rgba(0,0,0,.16);color:#fff;font:inherit}
+.reset-f .btn{justify-content:center}
 .cpt .wl-go svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .cpt-sw{margin:2px 0 0;text-align:center;font-size:14px;color:rgba(238,239,244,.62)}
 .cpt-sw button{font:600 14px/1 var(--sans);color:var(--blue-h);background:none;border:0;padding:4px 2px;cursor:pointer;text-decoration:underline;text-underline-offset:4px;text-decoration-color:rgba(185,198,255,.4)}

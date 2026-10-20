@@ -20,10 +20,13 @@ from contextlib import closing
 from datetime import date
 from pathlib import Path
 from typing import Literal
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request as URLRequest, urlopen
 from uuid import uuid4
 
 from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from .listing_pipeline import SELOGER_SOURCE, demo_listings
@@ -31,8 +34,20 @@ from .listing_pipeline import SELOGER_SOURCE, demo_listings
 
 PRODUCT = "piaule-fiction"
 SESSION_COOKIE = "pf_s"
+GOOGLE_STATE_COOKIE = "pf_google_state"
 SESSION_DAYS = 30
+GOOGLE_STATE_SECONDS = 600
 EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s]{2,}$")
+GOOGLE_CLIENT_ID = os.getenv("PIAULE_GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_CLIENT_SECRET = os.getenv("PIAULE_GOOGLE_CLIENT_SECRET", "").strip()
+GOOGLE_REDIRECT_URI = os.getenv(
+    "PIAULE_GOOGLE_REDIRECT_URI",
+    "http://127.0.0.1:8000/api/auth/google/callback",
+).strip()
+FRONTEND_REDIRECT_URI = os.getenv(
+    "PIAULE_FRONTEND_REDIRECT_URI",
+    "http://127.0.0.1:5173/espace.html",
+).strip()
 
 STATE_DIRECTORY = Path(os.getenv("PIAULE_STATE_DIRECTORY", ".local-state"))
 DATABASE_PATH = Path(
@@ -91,6 +106,16 @@ class WorkspaceMember(BaseModel):
 
 class PasswordChangeRequest(BaseModel):
     current_mdp: str = Field(min_length=1, max_length=128)
+    nouveau_mdp: str = Field(min_length=8, max_length=128)
+
+
+class PasswordResetRequest(BaseModel):
+    email: str
+    prenom: str = ""
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str = Field(min_length=20, max_length=160)
     nouveau_mdp: str = Field(min_length=8, max_length=128)
 
 
@@ -199,6 +224,7 @@ def _ensure_database() -> None:
                 salt BLOB NOT NULL,
                 password_hash BLOB NOT NULL,
                 workspace_id TEXT,
+                google_sub TEXT,
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS workspaces (
@@ -224,6 +250,18 @@ def _ensure_database() -> None:
                 FOREIGN KEY(email) REFERENCES candidates(email) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at);
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                token_hash TEXT PRIMARY KEY,
+                email TEXT NOT NULL,
+                expires_at REAL NOT NULL,
+                used_at REAL,
+                FOREIGN KEY(email) REFERENCES candidates(email) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS password_reset_email_idx ON password_reset_tokens(email);
+            CREATE TABLE IF NOT EXISTS google_oauth_states (
+                state_hash TEXT PRIMARY KEY,
+                expires_at REAL NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS search_profiles (
                 id TEXT PRIMARY KEY,
                 email TEXT NOT NULL,
@@ -285,6 +323,11 @@ def _ensure_database() -> None:
         }
         if "workspace_id" not in candidate_columns:
             connection.execute("ALTER TABLE candidates ADD COLUMN workspace_id TEXT")
+        if "google_sub" not in candidate_columns:
+            connection.execute("ALTER TABLE candidates ADD COLUMN google_sub TEXT")
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS candidates_google_sub_idx ON candidates(google_sub) WHERE google_sub IS NOT NULL AND google_sub <> ''"
+        )
 
         # Give legacy accounts a workspace before any workspace-scoped route is used.
         legacy_accounts = connection.execute(
@@ -368,6 +411,117 @@ def _clear_session(response: Response, request: Request, token: str | None) -> N
         httponly=True,
         samesite="lax",
     )
+
+
+def _google_error(message: str, code: int = 503) -> JSONResponse:
+    return JSONResponse(status_code=code, content={"ok": False, "erreur": message})
+
+
+def _create_workspace(connection: sqlite3.Connection, email: str, prenom: str) -> str:
+    workspace_id = f"ws-{uuid4().hex[:16]}"
+    connection.execute(
+        "INSERT INTO workspaces(id, name, owner_email, created_at) VALUES (?, ?, ?, datetime('now'))",
+        (workspace_id, f"Espace de {prenom}", email),
+    )
+    return workspace_id
+
+
+def _google_is_configured() -> bool:
+    return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI)
+
+
+def _google_token_exchange(code: str) -> dict[str, object]:
+    body = urlencode(
+        {
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": GOOGLE_REDIRECT_URI,
+            "grant_type": "authorization_code",
+        }
+    ).encode("utf-8")
+    request = URLRequest(
+        "https://oauth2.googleapis.com/token",
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail="Google n'a pas fourni de jeton exploitable.") from exc
+    if not payload.get("id_token"):
+        raise HTTPException(status_code=502, detail="La réponse Google ne contient pas d'identité.")
+    return payload
+
+
+def _verify_google_identity(id_token_value: str) -> tuple[str, str, str]:
+    try:
+        from google.auth.transport.requests import Request as GoogleRequest
+        from google.oauth2 import id_token as google_id_token
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="Le module Google OAuth n'est pas installé.") from exc
+    try:
+        claims = google_id_token.verify_oauth2_token(
+            id_token_value, GoogleRequest(), GOOGLE_CLIENT_ID
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="L'identité Google n'est pas valide.") from exc
+
+    subject = str(claims.get("sub", "")).strip()
+    email = _normalise_email(str(claims.get("email", "")))
+    verified = claims.get("email_verified") is True
+    prenom = _clean_text(str(claims.get("given_name") or claims.get("name") or ""), 40)
+    if not subject or not EMAIL_RE.fullmatch(email) or not verified or not prenom:
+        raise HTTPException(status_code=401, detail="Le compte Google ne fournit pas une identité vérifiée.")
+    return subject, email, prenom
+
+
+def _find_or_create_google_owner(subject: str, email: str, prenom: str) -> tuple[str, str, str]:
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT email, prenom, workspace_id, google_sub FROM candidates WHERE google_sub = ?",
+            (subject,),
+        ).fetchone()
+        if row is None:
+            row = connection.execute(
+                "SELECT email, prenom, workspace_id, google_sub FROM candidates WHERE email = ?",
+                (email,),
+            ).fetchone()
+        if row is None:
+            salt = secrets.token_bytes(16)
+            workspace_id = _create_workspace(connection, email, prenom)
+            connection.execute(
+                """
+                INSERT INTO candidates(email, prenom, salt, password_hash, workspace_id, google_sub, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (email, prenom, salt, _password_hash(secrets.token_urlsafe(32), salt), workspace_id, subject),
+            )
+            # The member row references candidates, so create it after the account.
+            connection.execute(
+                "INSERT OR IGNORE INTO workspace_members(workspace_id, email, role, joined_at) VALUES (?, ?, 'owner', datetime('now'))",
+                (workspace_id, email),
+            )
+            connection.commit()
+            return prenom, email, workspace_id
+
+        if row["google_sub"] and row["google_sub"] != subject:
+            raise HTTPException(status_code=409, detail="Cette adresse est déjà liée à un autre compte Google.")
+        workspace_id = row["workspace_id"]
+        if not workspace_id:
+            workspace_id = _create_workspace(connection, email, row["prenom"])
+        connection.execute(
+            "UPDATE candidates SET google_sub = ?, workspace_id = ? WHERE email = ?",
+            (subject, workspace_id, email),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO workspace_members(workspace_id, email, role, joined_at) VALUES (?, ?, 'owner', datetime('now'))",
+            (workspace_id, email),
+        )
+        connection.commit()
+        return row["prenom"], email, workspace_id
 
 
 def _candidate_from_token(token: str | None) -> Candidate:
@@ -576,6 +730,151 @@ def account(payload: AccountRequest, request: Request, response: Response) -> di
 
     _set_session(response, request, email)
     return {"ok": True, "prenom": prenom, "email": email, "workspace_id": workspace_id}
+
+
+@app.get("/api/auth/google/start", response_model=None)
+def google_start(request: Request) -> RedirectResponse | JSONResponse:
+    """Start Google OpenID Connect with identity-only scopes."""
+
+    if not _google_is_configured():
+        return _google_error("La connexion Google n'est pas encore configurée.")
+
+    state = secrets.token_urlsafe(32)
+    state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    with closing(_connect()) as connection:
+        connection.execute("DELETE FROM google_oauth_states WHERE expires_at < ?", (time.time(),))
+        connection.execute(
+            "INSERT INTO google_oauth_states(state_hash, expires_at) VALUES (?, ?)",
+            (state_hash, time.time() + GOOGLE_STATE_SECONDS),
+        )
+        connection.commit()
+
+    query = urlencode(
+        {
+            "client_id": GOOGLE_CLIENT_ID,
+            "redirect_uri": GOOGLE_REDIRECT_URI,
+            "response_type": "code",
+            "scope": "openid email profile",
+            "state": state,
+            "access_type": "online",
+            "prompt": "select_account",
+        }
+    )
+    response = RedirectResponse(
+        f"https://accounts.google.com/o/oauth2/v2/auth?{query}", status_code=302
+    )
+    response.set_cookie(
+        GOOGLE_STATE_COOKIE,
+        state,
+        max_age=GOOGLE_STATE_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=_secure_cookie(request),
+        path="/",
+    )
+    return response
+
+
+@app.get("/api/auth/google/callback", response_model=None)
+def google_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse | JSONResponse:
+    """Consume Google's one-time code and create the normal Piaule session."""
+
+    if error:
+        return _google_error("La connexion Google a été annulée.", 400)
+    if not code or not state:
+        return _google_error("La réponse Google est incomplète.", 400)
+    state_cookie = request.cookies.get(GOOGLE_STATE_COOKIE)
+    if not state_cookie or not hmac.compare_digest(state, state_cookie):
+        return _google_error("La vérification de sécurité Google a échoué.", 400)
+
+    state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT state_hash FROM google_oauth_states WHERE state_hash = ? AND expires_at > ?",
+            (state_hash, time.time()),
+        ).fetchone()
+        connection.execute("DELETE FROM google_oauth_states WHERE state_hash = ?", (state_hash,))
+        connection.commit()
+    if row is None:
+        return _google_error("La session Google a expiré. Recommence la connexion.", 400)
+
+    token_payload = _google_token_exchange(code)
+    subject, email, prenom = _verify_google_identity(str(token_payload["id_token"]))
+    owner_prenom, owner_email, workspace_id = _find_or_create_google_owner(subject, email, prenom)
+
+    response = RedirectResponse(FRONTEND_REDIRECT_URI, status_code=303)
+    _set_session(response, request, owner_email)
+    response.delete_cookie(
+        GOOGLE_STATE_COOKIE,
+        httponly=True,
+        samesite="lax",
+        secure=_secure_cookie(request),
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/mot-de-passe-oublie")
+def forgot_password(payload: PasswordResetRequest) -> dict[str, object]:
+    """Prepare a single-use reset token without revealing whether an email exists."""
+
+    email = _normalise_email(payload.email)
+    prenom = _clean_text(payload.prenom, 40).casefold()
+    reset_token = secrets.token_urlsafe(48)
+    token_hash = hashlib.sha256(reset_token.encode("utf-8")).hexdigest()
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT prenom FROM candidates WHERE email = ?", (email,)
+        ).fetchone()
+        if row is not None and prenom and row["prenom"].casefold() == prenom:
+            connection.execute("DELETE FROM password_reset_tokens WHERE email = ?", (email,))
+            connection.execute(
+                "INSERT INTO password_reset_tokens(token_hash, email, expires_at) VALUES (?, ?, ?)",
+                (token_hash, email, time.time() + 900),
+            )
+        connection.commit()
+
+    result: dict[str, object] = {
+        "ok": True,
+        "message": "Si les informations correspondent, un lien de réinitialisation sera envoyé.",
+    }
+    if os.getenv("PIAULE_EXPOSE_DEV_RESET_TOKEN", "false").lower() == "true":
+        result["dev_reset_token"] = reset_token
+    return result
+
+
+@app.post("/api/mot-de-passe-reinitialiser")
+def reset_password(payload: PasswordResetConfirm, request: Request) -> JSONResponse:
+    """Use a reset token once, then revoke all sessions for that account."""
+
+    token_hash = hashlib.sha256(payload.token.encode("utf-8")).hexdigest()
+    salt = secrets.token_bytes(16)
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            """
+            SELECT email FROM password_reset_tokens
+            WHERE token_hash = ? AND expires_at > ? AND used_at IS NULL
+            """,
+            (token_hash, time.time()),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=400, detail="Ce lien de réinitialisation est invalide ou expiré.")
+        connection.execute(
+            "UPDATE candidates SET salt = ?, password_hash = ? WHERE email = ?",
+            (salt, _password_hash(payload.nouveau_mdp, salt), row["email"]),
+        )
+        connection.execute(
+            "UPDATE password_reset_tokens SET used_at = ? WHERE token_hash = ?",
+            (time.time(), token_hash),
+        )
+        connection.execute("DELETE FROM sessions WHERE email = ?", (row["email"],))
+        connection.commit()
+    return JSONResponse(status_code=200, content={"ok": True})
 
 
 @app.get("/api/moi", response_model=Candidate)

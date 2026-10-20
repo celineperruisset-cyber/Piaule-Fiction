@@ -1299,6 +1299,12 @@ html.ouv-pin:not(.ouv-hold) .ouv,html.ouv-pin:not(.ouv-hold) .ouv *{pointer-even
 .cpt-eye svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.6}
 .cpt-eye[aria-pressed="true"]{color:var(--blue-l)}
 .cpt .wl-go{gap:10px}
+.cpt-options{display:flex;justify-content:center;gap:16px;flex-wrap:wrap}
+.cpt-options .wl-alt{margin:0}
+.reset-f{display:grid;gap:9px;padding:13px;border:1px solid rgba(185,198,255,.22);border-radius:14px;background:rgba(54,83,217,.1)}
+.reset-f p{margin:0;font-size:12.5px;line-height:1.45;color:rgba(238,239,244,.75)}
+.reset-f input{width:100%;padding:11px 12px;border-radius:10px;border:1px solid rgba(238,239,244,.2);background:rgba(0,0,0,.16);color:#fff;font:inherit}
+.reset-f .btn{justify-content:center}
 .cpt .wl-go svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .cpt-sw{margin:2px 0 0;text-align:center;font-size:14px;color:rgba(238,239,244,.62)}
 .cpt-sw button{font:600 14px/1 var(--sans);color:var(--blue-h);background:none;border:0;padding:4px 2px;cursor:pointer;text-decoration:underline;text-underline-offset:4px;text-decoration-color:rgba(185,198,255,.4)}
@@ -1818,6 +1824,17 @@ html.lt .tnav .tcta{color:#fff}
       <p class="wl-err" id="cpt-err" role="alert" hidden></p>
       <button class="btn wl-go" id="cpt-go" type="submit"><span id="cpt-gol">Créer mon compte</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
     </form>
+    <div class="cpt-options">
+      <a class="wl-alt" id="google-go" href="api/auth/google/start">Continuer avec Google</a>
+      <button class="wl-alt" id="forgot-go" type="button" hidden>Mot de passe oublié ?</button>
+    </div>
+    <form class="reset-f" id="reset-f" hidden>
+      <p>Indique ton e-mail et ton prénom. Si les informations correspondent, un lien temporaire sera envoyé.</p>
+      <input id="reset-email" type="email" placeholder="toi@exemple.fr" autocomplete="email">
+      <input id="reset-prenom" type="text" placeholder="Ton prénom" autocomplete="given-name">
+      <button class="btn" type="submit">Recevoir le lien</button>
+      <p class="wl-err" id="reset-msg" role="status" hidden></p>
+    </form>
     <p class="cpt-sw"><span id="cpt-swt">Déjà un compte ?</span> <button type="button" id="cpt-sw">Se connecter</button></p>
     <button class="wl-alt" id="esp-go" type="button">Voir d'abord comment ça marche</button>
   </div>
@@ -2194,6 +2211,8 @@ function cptSetMode(m){
   cptF.mdp.autocomplete = login ? "current-password" : "new-password";
   cptF.mdp.placeholder = login ? "Ton mot de passe" : "8 caractères minimum";
   $("cpt-gol").textContent = login ? "Me connecter" : "Créer mon compte";
+  $("forgot-go").hidden = !login;
+  $("reset-f").hidden = true;
   $("cpt-swt").textContent = login ? "Pas encore de compte ?" : "Déjà un compte ?";
   $("cpt-sw").textContent = login ? "Créer un compte" : "Se connecter";
   $("cpt-err").hidden = true;
@@ -2219,6 +2238,17 @@ esp.addEventListener("click", e => { if (e.target === esp) closeEsp(); });
 addEventListener("keydown", e => { if (e.key === "Escape") closeEsp(); });
 $("esp-go").addEventListener("click", () => { closeEsp(); goTo(1); });
 $("cpt-sw").addEventListener("click", () => { cptSetMode(cptMode === "creer" ? "connexion" : "creer"); (cptMode === "creer" ? cptF.prenom : cptF.email).focus(); });
+$("forgot-go").addEventListener("click", () => { $("reset-f").hidden = false; $("reset-email").focus(); });
+$("reset-f").addEventListener("submit", async e => {
+  e.preventDefault();
+  const email = $("reset-email").value.trim(), prenom = $("reset-prenom").value.trim(), msg = $("reset-msg");
+  msg.hidden = false; msg.textContent = "Préparation du lien…";
+  try {
+    const r = await fetch("api/mot-de-passe-oublie", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({email, prenom})});
+    const j = await r.json().catch(() => ({}));
+    msg.textContent = r.ok ? (j.message || "Si les informations correspondent, un lien sera envoyé.") : (j.detail || "Impossible de préparer le lien.");
+  } catch (x) { msg.textContent = "Le serveur ne répond pas. Réessaie dans un instant."; }
+});
 $("cpt-eye").addEventListener("click", e => {
   const on = cptF.mdp.type === "password"; cptF.mdp.type = on ? "text" : "password";
   e.currentTarget.setAttribute("aria-pressed", String(on));
