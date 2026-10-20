@@ -96,3 +96,81 @@ def test_password_reset_token_is_single_use():
             "/api/mot-de-passe-reinitialiser",
             json={"token": token, "nouveau_mdp": "another password"},
         ).status_code == 400
+
+
+def test_properties_and_lots_are_persisted_and_isolated_by_workspace():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        owner = TestClient(main.app)
+        other = TestClient(main.app)
+
+        for client, prenom, email in (
+            (owner, "Celine", "property-owner@example.test"),
+            (other, "Other", "other-owner@example.test"),
+        ):
+            assert client.post(
+                "/api/compte",
+                json={
+                    "action": "creer",
+                    "prenom": prenom,
+                    "email": email,
+                    "mdp": "correct horse battery staple",
+                },
+            ).status_code == 200
+
+        created = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Maison de démonstration",
+                "type": "maison",
+                "adresse_ligne1": "12 rue des Tests",
+                "code_postal": "73000",
+                "ville": "Chambéry",
+            },
+        )
+        assert created.status_code == 201
+        property_id = created.json()["id"]
+        assert created.json()["lots_count"] == 0
+
+        lot = owner.post(
+            f"/api/biens/{property_id}/lots",
+            json={
+                "identifiant": "T2 - 1er étage",
+                "type": "appartement",
+                "surface_m2": 42.5,
+                "pieces": 2,
+                "chambres": 1,
+                "loyer_mensuel_eur": 700,
+                "charges_mensuelles_eur": 60,
+                "statut": "disponible",
+            },
+        )
+        assert lot.status_code == 201
+        lot_id = lot.json()["id"]
+        assert lot.json()["bien_id"] == property_id
+        assert len(owner.get(f"/api/biens/{property_id}/lots").json()) == 1
+        assert owner.get(f"/api/biens/{property_id}").json()["lots_count"] == 1
+
+        duplicate = owner.post(
+            f"/api/biens/{property_id}/lots",
+            json={"identifiant": "T2 - 1er étage"},
+        )
+        assert duplicate.status_code == 409
+
+        assert other.get(f"/api/biens/{property_id}").status_code == 404
+        assert other.get(f"/api/biens/{property_id}/lots/{lot_id}").status_code == 404
+
+        updated = owner.put(
+            f"/api/biens/{property_id}/lots/{lot_id}",
+            json={
+                "identifiant": "T2 - 1er étage",
+                "type": "appartement",
+                "loyer_mensuel_eur": 720,
+                "statut": "occupe",
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["loyer_mensuel_eur"] == 720
+        assert updated.json()["statut"] == "occupe"

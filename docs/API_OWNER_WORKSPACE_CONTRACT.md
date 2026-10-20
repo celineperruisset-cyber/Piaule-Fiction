@@ -29,3 +29,14 @@ Les agents écrivent des propositions et des preuves. Les transmissions externes
 3. Ajouter la file de validation sans exécution externe.
 4. Relier le dashboard à des réponses persistées synthétiques.
 5. Ajouter les connecteurs un par un, uniquement après documentation des permissions.
+
+## Biens et lots disponibles
+
+Le premier domaine persistant est maintenant disponible :
+
+- `GET /api/biens` et `POST /api/biens` pour le portefeuille du propriétaire ;
+- `GET /api/biens/{id}` et `PUT /api/biens/{id}` pour la fiche d’un bien ;
+- `GET /api/biens/{id}/lots` et `POST /api/biens/{id}/lots` pour ses unités louables ;
+- `GET` et `PUT /api/biens/{id}/lots/{lot_id}` pour une unité précise.
+
+Toutes ces routes exigent une session propriétaire et filtrent par `workspace_id`. Un lot possède un identifiant unique dans son bien, ses caractéristiques principales, ses paramètres financiers et un statut de cycle de vie (`brouillon`, `disponible`, `occupe`, `archive`).

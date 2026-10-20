@@ -104,6 +104,46 @@ class WorkspaceMember(BaseModel):
     joined_at: str
 
 
+class PropertyCreate(BaseModel):
+    nom: str = Field(min_length=2, max_length=120)
+    type: Literal["immeuble", "maison", "appartement", "autre"] = "immeuble"
+    adresse_ligne1: str = Field(min_length=3, max_length=160)
+    adresse_ligne2: str = Field(default="", max_length=160)
+    code_postal: str = Field(default="", max_length=20)
+    ville: str = Field(min_length=2, max_length=100)
+    pays: str = Field(default="France", max_length=80)
+    description: str = Field(default="", max_length=2000)
+
+
+class Property(PropertyCreate):
+    id: str
+    workspace_id: str
+    lots_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class LotCreate(BaseModel):
+    identifiant: str = Field(min_length=1, max_length=80)
+    type: Literal["appartement", "maison", "studio", "chambre", "local", "autre"] = "appartement"
+    etage: str = Field(default="", max_length=30)
+    surface_m2: float | None = Field(default=None, ge=0, le=10000)
+    pieces: int | None = Field(default=None, ge=0, le=100)
+    chambres: int | None = Field(default=None, ge=0, le=100)
+    loyer_mensuel_eur: int | None = Field(default=None, ge=0, le=1_000_000)
+    charges_mensuelles_eur: int = Field(default=0, ge=0, le=1_000_000)
+    depot_garantie_eur: int | None = Field(default=None, ge=0, le=1_000_000)
+    statut: Literal["brouillon", "disponible", "occupe", "archive"] = "brouillon"
+
+
+class Lot(LotCreate):
+    id: str
+    workspace_id: str
+    bien_id: str
+    created_at: str
+    updated_at: str
+
+
 class PasswordChangeRequest(BaseModel):
     current_mdp: str = Field(min_length=1, max_length=128)
     nouveau_mdp: str = Field(min_length=8, max_length=128)
@@ -243,6 +283,44 @@ def _ensure_database() -> None:
                 FOREIGN KEY(email) REFERENCES candidates(email) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS workspace_members_email_idx ON workspace_members(email);
+            CREATE TABLE IF NOT EXISTS properties (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                nom TEXT NOT NULL,
+                property_type TEXT NOT NULL,
+                adresse_ligne1 TEXT NOT NULL,
+                adresse_ligne2 TEXT NOT NULL DEFAULT '',
+                code_postal TEXT NOT NULL DEFAULT '',
+                ville TEXT NOT NULL,
+                pays TEXT NOT NULL DEFAULT 'France',
+                description TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS properties_workspace_idx ON properties(workspace_id);
+            CREATE TABLE IF NOT EXISTS lots (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                identifiant TEXT NOT NULL,
+                lot_type TEXT NOT NULL,
+                etage TEXT NOT NULL DEFAULT '',
+                surface_m2 REAL,
+                pieces INTEGER,
+                chambres INTEGER,
+                loyer_mensuel_eur INTEGER,
+                charges_mensuelles_eur INTEGER NOT NULL DEFAULT 0,
+                depot_garantie_eur INTEGER,
+                statut TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(property_id, identifiant),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS lots_workspace_idx ON lots(workspace_id);
+            CREATE INDEX IF NOT EXISTS lots_property_idx ON lots(property_id);
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
                 email TEXT NOT NULL,
@@ -561,6 +639,111 @@ def _workspace_for_owner(owner: Candidate) -> Workspace:
         owner_email=row["owner_email"],
         created_at=row["created_at"],
     )
+
+
+def _property_from_row(row: sqlite3.Row) -> Property:
+    return Property(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        nom=row["nom"],
+        type=row["property_type"],
+        adresse_ligne1=row["adresse_ligne1"],
+        adresse_ligne2=row["adresse_ligne2"],
+        code_postal=row["code_postal"],
+        ville=row["ville"],
+        pays=row["pays"],
+        description=row["description"],
+        lots_count=row["lots_count"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _lot_from_row(row: sqlite3.Row) -> Lot:
+    return Lot(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        bien_id=row["property_id"],
+        identifiant=row["identifiant"],
+        type=row["lot_type"],
+        etage=row["etage"],
+        surface_m2=row["surface_m2"],
+        pieces=row["pieces"],
+        chambres=row["chambres"],
+        loyer_mensuel_eur=row["loyer_mensuel_eur"],
+        charges_mensuelles_eur=row["charges_mensuelles_eur"],
+        depot_garantie_eur=row["depot_garantie_eur"],
+        statut=row["statut"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _property_query() -> str:
+    return """
+        SELECT p.*, COUNT(l.id) AS lots_count
+        FROM properties p
+        LEFT JOIN lots l ON l.property_id = p.id
+    """
+
+
+def _owned_property_row(
+    connection: sqlite3.Connection, owner: Candidate, property_id: str
+) -> sqlite3.Row:
+    row = connection.execute(
+        _property_query()
+        + " WHERE p.id = ? AND p.workspace_id = ? GROUP BY p.id",
+        (property_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Bien introuvable dans ce workspace.")
+    return row
+
+
+def _owned_lot_row(
+    connection: sqlite3.Connection, owner: Candidate, property_id: str, lot_id: str
+) -> sqlite3.Row:
+    row = connection.execute(
+        "SELECT * FROM lots WHERE id = ? AND property_id = ? AND workspace_id = ?",
+        (lot_id, property_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Lot introuvable dans ce workspace.")
+    return row
+
+
+def _clean_property_payload(payload: PropertyCreate) -> PropertyCreate:
+    cleaned = PropertyCreate(
+        nom=_clean_text(payload.nom, 120),
+        type=payload.type,
+        adresse_ligne1=_clean_text(payload.adresse_ligne1, 160),
+        adresse_ligne2=_clean_text(payload.adresse_ligne2, 160),
+        code_postal=_clean_text(payload.code_postal, 20),
+        ville=_clean_text(payload.ville, 100),
+        pays=_clean_text(payload.pays, 80) or "France",
+        description=_clean_text(payload.description, 2000),
+    )
+    if len(cleaned.nom) < 2 or len(cleaned.adresse_ligne1) < 3 or len(cleaned.ville) < 2:
+        raise HTTPException(status_code=400, detail="Le nom, l'adresse et la ville sont obligatoires.")
+    return cleaned
+
+
+def _clean_lot_payload(payload: LotCreate) -> LotCreate:
+    cleaned = LotCreate(
+        identifiant=_clean_text(payload.identifiant, 80),
+        type=payload.type,
+        etage=_clean_text(payload.etage, 30),
+        surface_m2=payload.surface_m2,
+        pieces=payload.pieces,
+        chambres=payload.chambres,
+        loyer_mensuel_eur=payload.loyer_mensuel_eur,
+        charges_mensuelles_eur=payload.charges_mensuelles_eur,
+        depot_garantie_eur=payload.depot_garantie_eur,
+        statut=payload.statut,
+    )
+    if not cleaned.identifiant:
+        raise HTTPException(status_code=400, detail="L'identifiant du lot est obligatoire.")
+    return cleaned
 
 
 def _document_extension(filename: str, content_type: str) -> str | None:
@@ -940,6 +1123,213 @@ def list_workspace_members(owner: Candidate = Depends(current_candidate)) -> lis
         )
         for row in rows
     ]
+
+
+@app.get("/api/biens", response_model=list[Property])
+def list_properties(owner: Candidate = Depends(current_candidate)) -> list[Property]:
+    """List only the properties belonging to the authenticated owner's workspace."""
+
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            _property_query()
+            + " WHERE p.workspace_id = ? GROUP BY p.id ORDER BY p.created_at DESC, p.id",
+            (owner.workspace_id,),
+        ).fetchall()
+    return [_property_from_row(row) for row in rows]
+
+
+@app.post("/api/biens", response_model=Property, status_code=201)
+def create_property(
+    payload: PropertyCreate, owner: Candidate = Depends(current_candidate)
+) -> Property:
+    """Create a property in the current owner's workspace."""
+
+    cleaned = _clean_property_payload(payload)
+    property_id = f"bien-{uuid4().hex[:16]}"
+    with closing(_connect()) as connection:
+        connection.execute(
+            """
+            INSERT INTO properties(
+                id, workspace_id, nom, property_type, adresse_ligne1,
+                adresse_ligne2, code_postal, ville, pays, description,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            """,
+            (
+                property_id,
+                owner.workspace_id,
+                cleaned.nom,
+                cleaned.type,
+                cleaned.adresse_ligne1,
+                cleaned.adresse_ligne2,
+                cleaned.code_postal,
+                cleaned.ville,
+                cleaned.pays,
+                cleaned.description,
+            ),
+        )
+        connection.commit()
+        row = _owned_property_row(connection, owner, property_id)
+    return _property_from_row(row)
+
+
+@app.get("/api/biens/{property_id}", response_model=Property)
+def get_property(
+    property_id: str, owner: Candidate = Depends(current_candidate)
+) -> Property:
+    with closing(_connect()) as connection:
+        row = _owned_property_row(connection, owner, property_id)
+    return _property_from_row(row)
+
+
+@app.put("/api/biens/{property_id}", response_model=Property)
+def update_property(
+    property_id: str,
+    payload: PropertyCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> Property:
+    """Update property metadata without changing its workspace ownership."""
+
+    cleaned = _clean_property_payload(payload)
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        connection.execute(
+            """
+            UPDATE properties SET
+                nom = ?, property_type = ?, adresse_ligne1 = ?, adresse_ligne2 = ?,
+                code_postal = ?, ville = ?, pays = ?, description = ?, updated_at = datetime('now')
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (
+                cleaned.nom,
+                cleaned.type,
+                cleaned.adresse_ligne1,
+                cleaned.adresse_ligne2,
+                cleaned.code_postal,
+                cleaned.ville,
+                cleaned.pays,
+                cleaned.description,
+                property_id,
+                owner.workspace_id,
+            ),
+        )
+        connection.commit()
+        row = _owned_property_row(connection, owner, property_id)
+    return _property_from_row(row)
+
+
+@app.get("/api/biens/{property_id}/lots", response_model=list[Lot])
+def list_lots(
+    property_id: str, owner: Candidate = Depends(current_candidate)
+) -> list[Lot]:
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        rows = connection.execute(
+            """
+            SELECT * FROM lots
+            WHERE property_id = ? AND workspace_id = ?
+            ORDER BY created_at DESC, id
+            """,
+            (property_id, owner.workspace_id),
+        ).fetchall()
+    return [_lot_from_row(row) for row in rows]
+
+
+@app.post("/api/biens/{property_id}/lots", response_model=Lot, status_code=201)
+def create_lot(
+    property_id: str,
+    payload: LotCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> Lot:
+    """Create a rentable lot attached to an owned property."""
+
+    cleaned = _clean_lot_payload(payload)
+    lot_id = f"lot-{uuid4().hex[:16]}"
+    with closing(_connect()) as connection:
+        _owned_property_row(connection, owner, property_id)
+        try:
+            connection.execute(
+                """
+                INSERT INTO lots(
+                    id, workspace_id, property_id, identifiant, lot_type, etage,
+                    surface_m2, pieces, chambres, loyer_mensuel_eur,
+                    charges_mensuelles_eur, depot_garantie_eur, statut,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                """,
+                (
+                    lot_id,
+                    owner.workspace_id,
+                    property_id,
+                    cleaned.identifiant,
+                    cleaned.type,
+                    cleaned.etage,
+                    cleaned.surface_m2,
+                    cleaned.pieces,
+                    cleaned.chambres,
+                    cleaned.loyer_mensuel_eur,
+                    cleaned.charges_mensuelles_eur,
+                    cleaned.depot_garantie_eur,
+                    cleaned.statut,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Un lot porte déjà cet identifiant dans ce bien.") from exc
+        connection.commit()
+        row = _owned_lot_row(connection, owner, property_id, lot_id)
+    return _lot_from_row(row)
+
+
+@app.get("/api/biens/{property_id}/lots/{lot_id}", response_model=Lot)
+def get_lot(
+    property_id: str, lot_id: str, owner: Candidate = Depends(current_candidate)
+) -> Lot:
+    with closing(_connect()) as connection:
+        row = _owned_lot_row(connection, owner, property_id, lot_id)
+    return _lot_from_row(row)
+
+
+@app.put("/api/biens/{property_id}/lots/{lot_id}", response_model=Lot)
+def update_lot(
+    property_id: str,
+    lot_id: str,
+    payload: LotCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> Lot:
+    cleaned = _clean_lot_payload(payload)
+    with closing(_connect()) as connection:
+        _owned_lot_row(connection, owner, property_id, lot_id)
+        try:
+            connection.execute(
+                """
+                UPDATE lots SET
+                    identifiant = ?, lot_type = ?, etage = ?, surface_m2 = ?,
+                    pieces = ?, chambres = ?, loyer_mensuel_eur = ?,
+                    charges_mensuelles_eur = ?, depot_garantie_eur = ?,
+                    statut = ?, updated_at = datetime('now')
+                WHERE id = ? AND property_id = ? AND workspace_id = ?
+                """,
+                (
+                    cleaned.identifiant,
+                    cleaned.type,
+                    cleaned.etage,
+                    cleaned.surface_m2,
+                    cleaned.pieces,
+                    cleaned.chambres,
+                    cleaned.loyer_mensuel_eur,
+                    cleaned.charges_mensuelles_eur,
+                    cleaned.depot_garantie_eur,
+                    cleaned.statut,
+                    lot_id,
+                    property_id,
+                    owner.workspace_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code=409, detail="Un lot porte déjà cet identifiant dans ce bien.") from exc
+        connection.commit()
+        row = _owned_lot_row(connection, owner, property_id, lot_id)
+    return _lot_from_row(row)
 
 
 @app.post("/api/mot-de-passe")
