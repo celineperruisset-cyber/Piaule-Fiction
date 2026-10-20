@@ -300,6 +300,47 @@ def test_owner_applications_are_attached_to_property_and_duplicates_are_flagged(
         assert created.json()["statut"] == "recue"
         assert created.json()["doublon_possible"] is False
 
+        identity = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
+            data={"nom": "Pièce d'identité", "type": "identite", "provenance": "portail_candidat"},
+            files={"file": ("identite.pdf", b"%PDF-demo-identite", "application/pdf")},
+        )
+        assert identity.status_code == 201
+        identity_id = identity.json()["id"]
+        assert identity.json()["statut"] == "recu"
+        assert identity.json()["provenance"] == "portail_candidat"
+        assert owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}/completude"
+        ).json()["statut"] == "en_verification"
+
+        verified_identity = owner.put(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces/{identity_id}/verification",
+            json={"statut": "valide", "note_verification": "Document lisible."},
+        )
+        assert verified_identity.status_code == 200
+        assert verified_identity.json()["statut"] == "valide"
+
+        for document_type in ("domicile", "situation_professionnelle", "ressources", "imposition"):
+            uploaded = owner.post(
+                f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
+                data={"nom": document_type, "type": document_type, "provenance": "email"},
+                files={"file": (f"{document_type}.pdf", b"%PDF-demo", "application/pdf")},
+            )
+            assert uploaded.status_code == 201
+            verified = owner.put(
+                f"/api/biens/{property_id}/candidatures/{application_id}/pieces/{uploaded.json()['id']}/verification",
+                json={"statut": "valide"},
+            )
+            assert verified.status_code == 200
+
+        completeness = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/verifier"
+        )
+        assert completeness.status_code == 200
+        assert completeness.json()["statut"] == "complet"
+        assert completeness.json()["score"] == 100
+        assert owner.get(f"/api/biens/{property_id}/candidatures/{application_id}").json()["statut"] == "prete"
+
         duplicate = owner.post(
             f"/api/biens/{property_id}/candidatures",
             json={

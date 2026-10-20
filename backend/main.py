@@ -303,6 +303,83 @@ class InboundApplicationMessage(BaseModel):
     recu_le: str
 
 
+ApplicationDocumentType = Literal[
+    "identite",
+    "domicile",
+    "situation_professionnelle",
+    "ressources",
+    "imposition",
+    "garant",
+    "autre",
+]
+ApplicationDocumentStatus = Literal[
+    "recu",
+    "en_verification",
+    "valide",
+    "a_corriger",
+    "expire",
+    "refuse",
+]
+ApplicationDocumentProvenance = Literal[
+    "email",
+    "dossier_facile",
+    "portail_candidat",
+    "import",
+    "autre",
+]
+
+
+class ApplicationDocument(BaseModel):
+    id: str
+    workspace_id: str
+    candidature_id: str
+    bien_id: str
+    type: ApplicationDocumentType
+    nom: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    empreinte_sha256: str
+    provenance: ApplicationDocumentProvenance
+    statut: ApplicationDocumentStatus
+    date_expiration: str | None = None
+    note_verification: str
+    created_at: str
+    updated_at: str
+
+
+class ApplicationDocumentVerificationUpdate(BaseModel):
+    statut: ApplicationDocumentStatus
+    note_verification: str = Field(default="", max_length=2000)
+    date_expiration: str | None = None
+
+
+class CompletenessItem(BaseModel):
+    type: ApplicationDocumentType
+    statut: Literal[
+        "manquante",
+        "recu",
+        "en_verification",
+        "valide",
+        "a_corriger",
+        "expire",
+        "refuse",
+        "verifiee_par_dossier_facile",
+    ]
+    piece_id: str | None = None
+    source: str = ""
+    details: str = ""
+
+
+class ApplicationCompleteness(BaseModel):
+    candidature_id: str
+    statut: Literal["a_completer", "en_verification", "complet"]
+    score: int = Field(ge=0, le=100)
+    pieces_requises: list[CompletenessItem]
+    dossier_facile_statut: str = ""
+    mis_a_jour_le: str
+
+
 class DossierFacileConnection(BaseModel):
     id: str
     workspace_id: str
@@ -658,6 +735,32 @@ def _ensure_database() -> None:
             CREATE INDEX IF NOT EXISTS dossier_facile_workspace_idx ON dossier_facile_connections(workspace_id);
             CREATE INDEX IF NOT EXISTS dossier_facile_application_idx ON dossier_facile_connections(application_id);
             CREATE INDEX IF NOT EXISTS dossier_facile_tenant_idx ON dossier_facile_connections(tenant_id);
+            CREATE TABLE IF NOT EXISTS application_documents (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                document_type TEXT NOT NULL,
+                nom TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                stored_filename TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                provenance TEXT NOT NULL,
+                statut TEXT NOT NULL,
+                date_expiration TEXT,
+                note_verification TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS application_documents_workspace_idx ON application_documents(workspace_id);
+            CREATE INDEX IF NOT EXISTS application_documents_application_idx ON application_documents(application_id);
+            CREATE INDEX IF NOT EXISTS application_documents_type_idx ON application_documents(application_id, document_type);
+            CREATE INDEX IF NOT EXISTS application_documents_hash_idx ON application_documents(workspace_id, sha256);
             CREATE TABLE IF NOT EXISTS sessions (
                 token TEXT PRIMARY KEY,
                 email TEXT NOT NULL,
@@ -1341,6 +1444,164 @@ def _dossier_facile_connection_for_owner(
     if row is None:
         raise HTTPException(status_code=404, detail="Aucune connexion DossierFacile pour cette candidature.")
     return row
+
+
+def _application_document_from_row(row: sqlite3.Row) -> ApplicationDocument:
+    return ApplicationDocument(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        candidature_id=row["application_id"],
+        bien_id=row["property_id"],
+        type=row["document_type"],
+        nom=row["nom"],
+        filename=row["original_filename"],
+        content_type=row["content_type"],
+        size_bytes=row["size_bytes"],
+        empreinte_sha256=row["sha256"],
+        provenance=row["provenance"],
+        statut=row["statut"],
+        date_expiration=row["date_expiration"],
+        note_verification=row["note_verification"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _owned_application_document_row(
+    connection: sqlite3.Connection,
+    owner: Candidate,
+    property_id: str,
+    application_id: str,
+    document_id: str,
+) -> sqlite3.Row:
+    row = connection.execute(
+        """
+        SELECT * FROM application_documents
+        WHERE id = ? AND workspace_id = ? AND property_id = ? AND application_id = ?
+        """,
+        (document_id, owner.workspace_id, property_id, application_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Pièce de candidature introuvable.")
+    return row
+
+
+REQUIRED_APPLICATION_DOCUMENT_TYPES: tuple[ApplicationDocumentType, ...] = (
+    "identite",
+    "domicile",
+    "situation_professionnelle",
+    "ressources",
+    "imposition",
+)
+
+
+def _application_completeness(
+    connection: sqlite3.Connection, workspace_id: str, application_id: str
+) -> ApplicationCompleteness:
+    rows = connection.execute(
+        """
+        SELECT * FROM application_documents
+        WHERE workspace_id = ? AND application_id = ?
+        ORDER BY created_at DESC, id DESC
+        """,
+        (workspace_id, application_id),
+    ).fetchall()
+    latest_by_type: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        latest_by_type.setdefault(row["document_type"], row)
+
+    dossier_facile = connection.execute(
+        """
+        SELECT statut, statut_dossier FROM dossier_facile_connections
+        WHERE workspace_id = ? AND application_id = ?
+        ORDER BY updated_at DESC LIMIT 1
+        """,
+        (workspace_id, application_id),
+    ).fetchone()
+    dossier_facile_status = dossier_facile["statut"] if dossier_facile else ""
+    if dossier_facile_status == "verifiee":
+        items = [
+            CompletenessItem(
+                type=document_type,
+                statut="verifiee_par_dossier_facile",
+                source="dossier_facile",
+                details="Catégorie couverte par un dossier DossierFacile vérifié.",
+            )
+            for document_type in REQUIRED_APPLICATION_DOCUMENT_TYPES
+        ]
+        return ApplicationCompleteness(
+            candidature_id=application_id,
+            statut="complet",
+            score=100,
+            pieces_requises=items,
+            dossier_facile_statut=dossier_facile["statut_dossier"] or dossier_facile_status,
+            mis_a_jour_le=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+
+    valid_count = 0
+    pending = False
+    items: list[CompletenessItem] = []
+    today = date.today().isoformat()
+    for document_type in REQUIRED_APPLICATION_DOCUMENT_TYPES:
+        row = latest_by_type.get(document_type)
+        if row is None:
+            items.append(
+                CompletenessItem(type=document_type, statut="manquante", details="Aucune pièce reçue.")
+            )
+            continue
+        piece_status = row["statut"]
+        details = row["note_verification"] or ""
+        if piece_status == "valide" and row["date_expiration"] and row["date_expiration"] < today:
+            piece_status = "expire"
+            details = details or "La date d'expiration est dépassée."
+        if piece_status == "valide":
+            valid_count += 1
+        if piece_status in {"recu", "en_verification"}:
+            pending = True
+        items.append(
+            CompletenessItem(
+                type=document_type,
+                statut=piece_status,
+                piece_id=row["id"],
+                source=row["provenance"],
+                details=details,
+            )
+        )
+    if valid_count == len(REQUIRED_APPLICATION_DOCUMENT_TYPES):
+        completeness_status = "complet"
+    elif pending:
+        completeness_status = "en_verification"
+    else:
+        completeness_status = "a_completer"
+    return ApplicationCompleteness(
+        candidature_id=application_id,
+        statut=completeness_status,
+        score=round(valid_count * 100 / len(REQUIRED_APPLICATION_DOCUMENT_TYPES)),
+        pieces_requises=items,
+        dossier_facile_statut=(dossier_facile["statut_dossier"] if dossier_facile else ""),
+        mis_a_jour_le=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    )
+
+
+def _refresh_application_status(
+    connection: sqlite3.Connection, workspace_id: str, application_id: str
+) -> ApplicationCompleteness:
+    completeness = _application_completeness(connection, workspace_id, application_id)
+    new_status = {
+        "complet": "prete",
+        "en_verification": "en_verification",
+        "a_completer": "a_completer",
+    }[completeness.statut]
+    connection.execute(
+        """
+        UPDATE owner_applications
+        SET statut = ?, updated_at = datetime('now')
+        WHERE id = ? AND workspace_id = ?
+          AND statut IN ('recue', 'a_completer', 'en_verification', 'prete')
+        """,
+        (new_status, application_id, workspace_id),
+    )
+    return completeness
 
 
 def _owned_application_channel_row(
@@ -2708,6 +2969,200 @@ def dossier_facile_webhook(
             )
         connection.commit()
     return {"ok": True, "connection_id": row["id"], "statut": connection_status}
+
+
+def _application_for_owner(
+    connection: sqlite3.Connection, owner: Candidate, property_id: str, application_id: str
+) -> sqlite3.Row:
+    _owned_property_row(connection, owner, property_id)
+    row = connection.execute(
+        """
+        SELECT * FROM owner_applications
+        WHERE id = ? AND property_id = ? AND workspace_id = ?
+        """,
+        (application_id, property_id, owner.workspace_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Candidature introuvable dans ce bien.")
+    return row
+
+
+@app.get(
+    "/api/biens/{property_id}/candidatures/{application_id}/pieces",
+    response_model=list[ApplicationDocument],
+)
+def list_application_documents(
+    property_id: str,
+    application_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> list[ApplicationDocument]:
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        rows = connection.execute(
+            """
+            SELECT * FROM application_documents
+            WHERE workspace_id = ? AND property_id = ? AND application_id = ?
+            ORDER BY created_at DESC, id
+            """,
+            (owner.workspace_id, property_id, application_id),
+        ).fetchall()
+    return [_application_document_from_row(row) for row in rows]
+
+
+@app.post(
+    "/api/biens/{property_id}/candidatures/{application_id}/pieces",
+    response_model=ApplicationDocument,
+    status_code=201,
+)
+async def upload_application_document(
+    property_id: str,
+    application_id: str,
+    nom: str = Form(...),
+    type: str = Form(...),
+    provenance: str = Form("portail_candidat"),
+    date_expiration: str = Form(""),
+    file: UploadFile = File(...),
+    owner: Candidate = Depends(current_candidate),
+) -> ApplicationDocument:
+    """Store one private candidate document and attach it to its application."""
+
+    document_type = _clean_text(type, 60)
+    allowed_types = set(ApplicationDocumentType.__args__)
+    if document_type not in allowed_types:
+        raise HTTPException(status_code=422, detail="Type de pièce non pris en charge.")
+    if provenance not in set(ApplicationDocumentProvenance.__args__):
+        raise HTTPException(status_code=422, detail="Provenance de pièce non prise en charge.")
+    document_name = _clean_text(nom, 120)
+    if len(document_name) < 2:
+        raise HTTPException(status_code=400, detail="Nomme la pièce avant de la déposer.")
+    expiration = _clean_text(date_expiration, 20) or None
+    if expiration:
+        try:
+            date.fromisoformat(expiration)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="La date d'expiration doit être au format AAAA-MM-JJ.") from exc
+    extension = _document_extension(file.filename or "", file.content_type or "")
+    if extension is None:
+        raise HTTPException(status_code=415, detail="Format accepté : PDF, JPG, PNG ou HEIC.")
+    content = await file.read(MAX_DOCUMENT_BYTES + 1)
+    if len(content) > MAX_DOCUMENT_BYTES:
+        raise HTTPException(status_code=413, detail="La pièce ne doit pas dépasser 10 Mo.")
+
+    document_id = f"application-doc-{uuid4().hex}"
+    stored_filename = f"{document_id}.{extension}"
+    original_filename = _clean_text(file.filename or f"piece.{extension}", 180)
+    digest = hashlib.sha256(content).hexdigest()
+    UPLOAD_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    (UPLOAD_DIRECTORY / stored_filename).write_bytes(content)
+    try:
+        with closing(_connect()) as connection:
+            _application_for_owner(connection, owner, property_id, application_id)
+            connection.execute(
+                """
+                INSERT INTO application_documents(
+                    id, workspace_id, application_id, property_id, document_type,
+                    nom, original_filename, stored_filename, content_type, size_bytes,
+                    sha256, provenance, statut, date_expiration, note_verification,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'recu', ?, '', datetime('now'), datetime('now'))
+                """,
+                (
+                    document_id,
+                    owner.workspace_id,
+                    application_id,
+                    property_id,
+                    document_type,
+                    document_name,
+                    original_filename,
+                    stored_filename,
+                    file.content_type or "application/octet-stream",
+                    len(content),
+                    digest,
+                    provenance,
+                    expiration,
+                ),
+            )
+            _refresh_application_status(connection, owner.workspace_id, application_id)
+            connection.commit()
+            row = connection.execute(
+                "SELECT * FROM application_documents WHERE id = ?",
+                (document_id,),
+            ).fetchone()
+    except Exception:
+        (UPLOAD_DIRECTORY / stored_filename).unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+    return _application_document_from_row(row)
+
+
+@app.put(
+    "/api/biens/{property_id}/candidatures/{application_id}/pieces/{document_id}/verification",
+    response_model=ApplicationDocument,
+)
+def verify_application_document(
+    property_id: str,
+    application_id: str,
+    document_id: str,
+    payload: ApplicationDocumentVerificationUpdate,
+    owner: Candidate = Depends(current_candidate),
+) -> ApplicationDocument:
+    """Set a deterministic review status for one candidate document."""
+
+    expiration = _clean_text(payload.date_expiration, 20) if payload.date_expiration else None
+    if expiration:
+        try:
+            date.fromisoformat(expiration)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="La date d'expiration doit être au format AAAA-MM-JJ.") from exc
+    note = _clean_text(payload.note_verification, 2000)
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        _owned_application_document_row(connection, owner, property_id, application_id, document_id)
+        connection.execute(
+            """
+            UPDATE application_documents
+            SET statut = ?, date_expiration = ?, note_verification = ?, updated_at = datetime('now')
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (payload.statut, expiration, note, document_id, owner.workspace_id),
+        )
+        _refresh_application_status(connection, owner.workspace_id, application_id)
+        connection.commit()
+        row = _owned_application_document_row(connection, owner, property_id, application_id, document_id)
+    return _application_document_from_row(row)
+
+
+@app.get(
+    "/api/biens/{property_id}/candidatures/{application_id}/completude",
+    response_model=ApplicationCompleteness,
+)
+def get_application_completeness(
+    property_id: str,
+    application_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> ApplicationCompleteness:
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        return _application_completeness(connection, owner.workspace_id, application_id)
+
+
+@app.post(
+    "/api/biens/{property_id}/candidatures/{application_id}/verifier",
+    response_model=ApplicationCompleteness,
+)
+def refresh_application_completeness(
+    property_id: str,
+    application_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> ApplicationCompleteness:
+    """Recompute completeness and synchronize the safe application status."""
+
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        result = _refresh_application_status(connection, owner.workspace_id, application_id)
+        connection.commit()
+    return result
 
 
 @app.get("/api/biens/{property_id}/candidatures", response_model=list[OwnerApplication])

@@ -76,6 +76,24 @@ Le webhook `POST /api/internal/dossier-facile/webhook` met à jour le statut lor
 
 Le connecteur reste désactivé par défaut. DossierFacile exige un partenariat, une charte et des identifiants de préproduction avant les tests ; l’application ne doit donc jamais simuler une validation officielle lorsqu’elle n’est pas connectée.
 
+## Pièces et complétude d’une candidature
+
+Les pièces sont rattachées à la candidature, au bien et au workspace. Les cinq catégories minimales suivies par le moteur sont `identite`, `domicile`, `situation_professionnelle`, `ressources` et `imposition`. `garant` et `autre` sont disponibles en complément.
+
+Les routes sont :
+
+- `GET /api/biens/{id}/candidatures/{application_id}/pieces` pour lister les pièces privées ;
+- `POST /api/biens/{id}/candidatures/{application_id}/pieces` pour déposer un PDF, JPG, PNG ou HEIC ;
+- `PUT /api/biens/{id}/candidatures/{application_id}/pieces/{document_id}/verification` pour changer le statut de vérification ;
+- `GET /api/biens/{id}/candidatures/{application_id}/completude` pour lire le résultat ;
+- `POST /api/biens/{id}/candidatures/{application_id}/verifier` pour recalculer et synchroniser le statut de la candidature.
+
+Une pièce conserve son type, sa provenance (`email`, `dossier_facile`, `portail_candidat`, `import` ou `autre`), son empreinte SHA-256, son statut et sa date d’expiration. Les statuts sont `recu`, `en_verification`, `valide`, `a_corriger`, `expire` et `refuse`.
+
+Le moteur est déterministe : une pièce manquante produit `manquante`, une pièce reçue mais non vérifiée produit `en_verification`, une pièce valide produit `valide` et une pièce dépassée produit `expire`. Le score compte uniquement les cinq catégories requises. Un dossier DossierFacile officiellement vérifié peut couvrir ces catégories avec la mention `verifiee_par_dossier_facile`, sans recopier les documents originaux dans Piaule Fiction.
+
+Le dépôt exposé dans cette première tranche est protégé par la session propriétaire. Le lien candidat sécurisé et le dépôt autonome depuis l’espace candidat seront ajoutés sur cette même table, afin de ne pas créer un second modèle documentaire.
+
 La fiche comprend maintenant les types de location, équipements, disponibilité, photos, visibilité de l’adresse, informations DPE, mode de détention et premiers champs de copropriété. Les routes `POST/GET/PUT /api/biens/{id}/suivis` permettent de suivre diagnostics, assurances, contrats fournisseurs et documents de copropriété avec leurs échéances. `GET /api/echeances` remonte les éléments expirés ou arrivant à échéance.
 
 La comptabilité, la fiscalité, le financement, la rentabilité et les tableaux financiers ne font pas partie du produit. Les champs de loyer, charges et dépôt servent uniquement à configurer une mise en location et ses règles opérationnelles.
