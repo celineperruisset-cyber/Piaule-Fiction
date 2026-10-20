@@ -113,7 +113,7 @@ Le premier déploiement est un SaaS propriétaire-first :
 1. le propriétaire crée son espace et renseigne ses biens ;
 2. Piaule Fiction prépare les actions et les demandes ;
 3. le propriétaire définit les règles de validation ;
-4. l'agent exécute uniquement les actions autorisées par les connecteurs ;
+4. l'agent exécute uniquement les actions autorisées par les connecteurs et les paramètres du propriétaire ;
 5. les décisions réglementées ou sensibles remontent dans une file de validation ;
 6. un partenaire habilité peut prendre le relais pour les activités qu'il porte juridiquement.
 
@@ -128,10 +128,10 @@ Le premier MVP fonctionnel porte sur un propriétaire, un bien et un flux de can
 3. tableau des candidatures ;
 4. coffre documentaire candidat ;
 5. complétude et cohérence déterministes ;
-6. demande ciblée de pièce manquante ;
+6. demande ciblée de pièce manquante envoyée directement au candidat depuis la boîte autorisée ;
 7. comparaison explicable ;
 8. file de validations ;
-9. calendrier de visites ;
+9. calendrier de visites et disponibilités Google/Outlook ;
 10. journal d'audit et suppression des données.
 
 Les intégrations de portails et les paiements viennent après les contrats de domaine et le mode démonstration.

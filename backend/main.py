@@ -162,6 +162,7 @@ AGENT_SCOPE_POLICIES: dict[str, set[str]] = {
         "recalculer_completude",
         "preparer_message_candidat",
         "preparer_relance_completude",
+        "envoyer_demande_piece",
     },
     "agent-dossier": {"analyser_piece", "recalculer_completude", "preparer_verification"},
     "agent-confiance": {"analyser_piece", "preparer_verification", "signaler_anomalie"},
@@ -270,8 +271,8 @@ OWNER_AGENT_CONTRACTS: dict[str, dict[str, object]] = {
     },
     "agent-completude": {
         "entrees": ["candidature", "pièces reçues", "politique documentaire"],
-        "sorties": ["pièces manquantes", "pièces à corriger", "état de complétude", "demande ciblée"],
-        "actions": ["analyser_piece", "recalculer_completude", "preparer_message_candidat", "preparer_relance_completude"],
+        "sorties": ["pièces manquantes", "pièces à corriger", "état de complétude", "demande ciblée", "message envoyé ou erreur d'envoi"],
+        "actions": ["analyser_piece", "recalculer_completude", "preparer_message_candidat", "preparer_relance_completude", "envoyer_demande_piece"],
         "escalades": ["pièce interdite demandée", "règle inconnue", "candidature impossible à rattacher"],
     },
     "agent-confiance": {
@@ -287,10 +288,10 @@ OWNER_AGENT_CONTRACTS: dict[str, dict[str, object]] = {
         "escalades": ["critère absent", "critère potentiellement discriminatoire", "dossiers incomparables"],
     },
     "agent-visites": {
-        "entrees": ["candidature prête", "créneaux du propriétaire", "préférences de rendez-vous"],
-        "sorties": ["créneaux compatibles", "conflits détectés", "proposition de visite"],
+        "entrees": ["candidature prête", "calendrier ou créneaux du propriétaire", "préférences de rendez-vous"],
+        "sorties": ["créneaux compatibles", "conflits détectés", "proposition de visite", "confirmation ou refus du candidat"],
         "actions": ["proposer_visite", "preparer_rappel_visite"],
-        "escalades": ["aucun créneau", "conflit d’agenda", "candidature incomplète"],
+        "escalades": ["aucun créneau", "conflit d’agenda", "calendrier non connecté", "candidature incomplète"],
     },
     "agent-communication": {
         "entrees": ["événement à communiquer", "destinataire", "contexte du dossier", "ton configuré"],

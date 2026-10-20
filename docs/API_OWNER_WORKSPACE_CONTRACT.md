@@ -91,16 +91,16 @@ Les événements d'audit sont append-only via l'API : création et mise à jour 
 
 Une seconde barrière contrôle le périmètre de l'agent. Une action liée à une mission est comparée à la politique du rôle. Si le rôle ne possède pas cette capacité, l'API répond `403`, ne crée pas d'action et ajoute `agent_action_bloquee` dans l'audit. Les contrats persistés donnent le vocabulaire métier ; la matrice d'actions reste un garde-fou technique et sera affinée avec les réponses aux questions de cadrage ci-dessous.
 
-## Questions de cadrage des contrats
+## Décisions de cadrage des contrats v1
 
-La version `v1` est volontairement prudente et sert de contrat de démarrage. Avant d'activer un fournisseur LLM ou un worker spécialisé, il faudra trancher :
+Les contrats v1 suivent les décisions du produit :
 
-1. Le propriétaire autorise-t-il l'agent à préparer uniquement, ou aussi à envoyer automatiquement les relances de pièces et messages candidats ?
-2. Quelles actions doivent toujours rester dans la file de validation : publication, demande de pièce, proposition de visite, refus, sélection et modification d'une annonce ?
-3. L'Agent Comparaison peut-il seulement classer et expliquer, ou doit-il proposer une shortlist avec un seuil configuré par bien ?
-4. L'Agent Confiance doit-il produire des alertes techniques uniquement, ou déclencher des demandes de preuve externe lorsque le candidat a donné son consentement ?
-5. Qui possède la décision finale pour chaque étape : propriétaire seul, professionnel habilité, ou délégation configurable par workspace ?
-6. Pour l'Agent Diffusion, quels canaux seront autorisés au prototype et quelle preuve de connexion attend-on pour chacun ?
+1. L'Agent Complétude peut envoyer directement un e-mail au candidat depuis la boîte configurée, avec uniquement les pièces autorisées manquantes et un lien de dépôt valable trente jours.
+2. L'Agent Diffusion attend une première validation et exécution du propriétaire. Les publications suivantes suivent le paramètre du compte : automatique si le propriétaire l'a autorisé, validation systématique sinon.
+3. L'Agent Comparaison prépare une shortlist expliquée. Le propriétaire décide toujours de retenir ou refuser.
+4. L'Agent Confiance peut préparer une vérification officielle, mais elle ne démarre qu'après le consentement du candidat et le retour d'un connecteur reconnu.
+5. L'Agent Visites peut lire les créneaux internes et proposera ensuite des créneaux issus de Google ou Outlook lorsque le propriétaire aura connecté son calendrier. Il ne confirme pas une décision de location.
+6. Le propriétaire garde la décision finale pour le refus, la sélection, la signature, le paiement, la suppression définitive et toute action réglementée.
 
 ## Biens et lots disponibles
 
