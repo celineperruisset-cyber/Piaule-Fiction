@@ -52,3 +52,5 @@ Le centre de contrôle est disponible sans frontend :
 - le parcours complet est disponible dans `GET /api/audit`.
 
 Les routes privées exigent `x-piaule-agent-token` correspondant à `PIAULE_AGENT_INTERNAL_TOKEN`. La clé d'idempotence empêche une proposition rejouée de créer un doublon. La première exécution est un marqueur de test : aucun e-mail, SMS, paiement, calendrier ou publication externe n'est déclenché par ce centre.
+
+Chaque action liée à une mission est aussi contrôlée par le rôle de l'agent. Une capacité absente de sa politique est refusée en `403` et produit un événement `agent_action_bloquee`. La liste actuelle des capacités sert de garde-fou de départ ; les contrats détaillés des agents seront définis ensuite.

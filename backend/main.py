@@ -149,6 +149,23 @@ ActionRisk = Literal[
 ]
 ActionDecision = Literal["autorisee", "refusee"]
 
+# This is the first hard boundary for agent autonomy. The model may suggest
+# only an action that belongs to its role; the owner approval gate remains a
+# separate boundary for sensitive actions.
+AGENT_SCOPE_POLICIES: dict[str, set[str]] = {
+    "agent-bien": {"analyser_bien", "preparer_annonce"},
+    "agent-completude": {
+        "analyser_piece",
+        "recalculer_completude",
+        "preparer_message_candidat",
+        "preparer_relance_completude",
+    },
+    "agent-dossier": {"analyser_piece", "recalculer_completude", "preparer_verification"},
+    "agent-comparaison": {"comparer_candidatures", "preparer_recommandation"},
+    "agent-visites": {"proposer_visite", "preparer_rappel_visite"},
+    "agent-suivi": {"preparer_tache", "preparer_relance_echeance"},
+}
+
 
 class AgentRunCreate(BaseModel):
     type_agent: str = Field(min_length=2, max_length=120)
@@ -1767,6 +1784,55 @@ def _action_expired(row: sqlite3.Row) -> bool:
         return True
 
 
+def _enforce_agent_scope(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    payload: ActionCreate,
+    actor_id: str,
+) -> None:
+    """Reject an action that is outside the role of the agent that proposed it."""
+
+    if not payload.agent_run_id:
+        # Calls without a run are reserved for the trusted orchestration
+        # worker. A named agent must always be attached to a mission.
+        return
+    run = connection.execute(
+        "SELECT id, agent_type, status FROM agent_runs WHERE id = ? AND workspace_id = ?",
+        (payload.agent_run_id, workspace_id),
+    ).fetchone()
+    if run is None:
+        raise HTTPException(status_code=404, detail="La mission d'agent est introuvable dans ce workspace.")
+    if run["status"] in {"completed", "failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Une mission terminée ne peut plus produire d'action.")
+    allowed_actions = AGENT_SCOPE_POLICIES.get(run["agent_type"], set())
+    if payload.type_action in allowed_actions:
+        return
+    _record_audit_event(
+        connection,
+        workspace_id=workspace_id,
+        actor_type="system",
+        actor_id="agent-guard",
+        event_name="agent_action_bloquee",
+        entity_type="agent_run",
+        entity_id=run["id"],
+        property_id=payload.bien_id,
+        application_id=payload.candidature_id,
+        metadata={
+            "agent_type": run["agent_type"],
+            "action_demandee": payload.type_action,
+            "actions_autorisees": sorted(allowed_actions),
+            "acteur": actor_id,
+            "motif": "Action hors périmètre de l'agent.",
+        },
+    )
+    connection.commit()
+    raise HTTPException(
+        status_code=403,
+        detail=f"L'action '{payload.type_action}' est hors du périmètre de {run['agent_type']}.",
+    )
+
+
 def _create_agent_action(
     connection: sqlite3.Connection,
     *,
@@ -1775,6 +1841,12 @@ def _create_agent_action(
     actor_type: str,
     actor_id: str,
 ) -> tuple[sqlite3.Row, bool]:
+    _enforce_agent_scope(
+        connection,
+        workspace_id=workspace_id,
+        payload=payload,
+        actor_id=actor_id,
+    )
     _validate_action_scope(
         connection,
         workspace_id=workspace_id,

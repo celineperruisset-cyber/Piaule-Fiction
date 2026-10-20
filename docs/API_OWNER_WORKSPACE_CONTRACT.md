@@ -53,6 +53,8 @@ Les risques reconnus sont `lecture`, `brouillon`, `transmission`, `engagement_fi
 
 Les événements d'audit sont append-only via l'API : création et mise à jour de mission, proposition d'action, autorisation, refus, expiration et exécution. Chaque événement conserve l'acteur, le workspace, l'entité concernée et des métadonnées limitées. Les nouvelles routes ne déclenchent aucun e-mail, SMS, paiement, publication ou rendez-vous externe ; ces connecteurs seront branchés ensuite derrière cette frontière.
 
+Une seconde barrière contrôle le périmètre de l'agent. Une action liée à une mission est comparée à la politique du rôle (`agent-completude`, `agent-dossier`, `agent-comparaison`, `agent-visites`, `agent-bien` ou `agent-suivi`). Si le rôle ne possède pas cette capacité, l'API répond `403`, ne crée pas d'action et ajoute `agent_action_bloquee` dans l'audit. Cette liste de capacités est un socle technique provisoire ; elle sera affinée avec les contrats détaillés de chaque agent.
+
 ## Biens et lots disponibles
 
 Le premier domaine persistant est maintenant disponible :

@@ -1086,3 +1086,53 @@ def test_agent_action_can_be_rejected_without_execution():
             headers={"x-piaule-agent-token": "agent-test-token"},
             json={},
         ).status_code == 409
+
+
+def test_agent_scope_blocks_out_of_role_action_and_records_audit():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.AGENT_INTERNAL_TOKEN = "agent-test-token"
+        owner = TestClient(main.app)
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "scope-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        workspace_id = created.json()["workspace_id"]
+        run = owner.post(
+            "/api/internal/agent-runs",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={
+                "workspace_id": workspace_id,
+                "type_agent": "agent-completude",
+                "mission": "Contrôler un dossier incomplet",
+            },
+        )
+        assert run.status_code == 201
+        run_id = run.json()["id"]
+
+        blocked = owner.post(
+            "/api/internal/actions",
+            headers={"x-piaule-agent-token": "agent-test-token"},
+            json={
+                "workspace_id": workspace_id,
+                "agent_run_id": run_id,
+                "type_action": "publier_annonce",
+                "libelle": "Publier une annonce",
+                "niveau_risque": "transmission",
+                "payload": {"titre": "Annonce hors rôle"},
+                "idempotency_key": "scope-blocked-action-001",
+            },
+        )
+        assert blocked.status_code == 403
+        assert "hors du périmètre" in blocked.json()["detail"]
+        events = owner.get("/api/audit", params={"entite_type": "agent_run", "entite_id": run_id})
+        assert events.status_code == 200
+        assert events.json()[0]["evenement"] == "agent_action_bloquee"
+        assert events.json()[0]["metadata"]["action_demandee"] == "publier_annonce"
