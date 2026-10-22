@@ -2518,3 +2518,67 @@ def test_external_channel_message_is_threaded_idempotently_and_stores_attachment
         assert dashboard.json()["messages"]["messages_non_lus"] == 1
         assert dashboard.json()["messages"]["pieces_a_recuperer"] == 0
         assert dashboard.json()["conversations_recentes"][0]["canal"] == "whatsapp"
+
+        main.AGENT_INTERNAL_TOKEN = "agent-channel-test-token"
+        agent_reply = owner.post(
+            "/api/internal/candidatures/reponses-agent",
+            headers={"x-piaule-agent-token": "agent-channel-test-token"},
+            json={
+                "workspace_id": created.json()["workspace_id"],
+                "property_id": property_id,
+                "candidature_id": application_id,
+                "canal": "whatsapp",
+                "sujet": "Suite de votre candidature",
+                "contenu": "Votre dossier est en cours de vérification.",
+            },
+        )
+        assert agent_reply.status_code == 201
+        assert agent_reply.json()["source"] == "agent"
+        assert agent_reply.json()["statut"] == "a_valider"
+        message_id = agent_reply.json()["id"]
+
+        approved = owner.post(
+            f"/api/messages/{message_id}/valider",
+            json={"motif": "Réponse relue et approuvée."},
+        )
+        assert approved.status_code == 200
+        assert approved.json()["statut"] == "a_envoyer"
+        claimed = owner.get(
+            "/api/internal/canaux/whatsapp/sortants",
+            headers={"x-piaule-channel-token": "channel-internal-test-token"},
+        )
+        assert claimed.status_code == 200
+        assert claimed.json()[0]["id"] == message_id
+        result = owner.post(
+            f"/api/internal/canaux/messages/{message_id}/resultat",
+            headers={"x-piaule-channel-token": "channel-internal-test-token"},
+            json={"succes": True, "message_externe_id": "wamid-out-001"},
+        )
+        assert result.status_code == 200
+        assert result.json()["statut"] == "envoye"
+
+        policy = owner.put(
+            "/api/parametres/automatisation",
+            json={
+                "completude_candidat": "automatique",
+                "reponses_agents": "jamais",
+                "proposition_visite": "validation",
+                "publication_annonce": "validation",
+                "verification_officielle": "validation",
+                "refus_candidature": "validation",
+            },
+        )
+        assert policy.status_code == 200
+        blocked = owner.post(
+            "/api/internal/candidatures/reponses-agent",
+            headers={"x-piaule-agent-token": "agent-channel-test-token"},
+            json={
+                "workspace_id": created.json()["workspace_id"],
+                "property_id": property_id,
+                "candidature_id": application_id,
+                "canal": "whatsapp",
+                "contenu": "Cette réponse ne doit jamais partir automatiquement.",
+            },
+        )
+        assert blocked.status_code == 201
+        assert blocked.json()["statut"] == "bloque"

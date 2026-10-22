@@ -1388,6 +1388,38 @@ class OwnerCandidateMessageCreate(BaseModel):
     sujet: str = Field(default="", max_length=160)
 
 
+class AgentCandidateReplyCreate(BaseModel):
+    workspace_id: str = Field(min_length=1, max_length=120)
+    property_id: str = Field(min_length=1, max_length=120)
+    candidature_id: str = Field(min_length=1, max_length=120)
+    contenu: str = Field(min_length=1, max_length=100_000)
+    sujet: str = Field(default="", max_length=160)
+    canal: ConversationChannel | None = None
+    repond_a: str = Field(default="", max_length=500)
+    agent_run_id: str = Field(default="", max_length=120)
+
+
+class CandidateMessageDecision(BaseModel):
+    motif: str = Field(default="", max_length=2000)
+
+
+class ChannelOutboundMessage(BaseModel):
+    id: str
+    candidature_id: str
+    canal: Literal["whatsapp", "telegram"]
+    identifiant_contact_externe: str
+    identifiant_fil_externe: str = ""
+    sujet: str
+    contenu: str
+    statut: Literal["en_cours"]
+
+
+class ChannelOutboundResult(BaseModel):
+    message_externe_id: str = Field(default="", max_length=500)
+    succes: bool
+    erreur: str = Field(default="", max_length=1000)
+
+
 ConversationChannel = Literal["email", "portail_candidat", "telegram", "whatsapp"]
 ConversationStatus = Literal["ouverte", "en_attente", "fermee"]
 AutomationMode = Literal["automatique", "validation", "jamais"]
@@ -1462,7 +1494,14 @@ class CandidateCompletenessFollowUp(BaseModel):
     pieces_demandees: list[ApplicationDocumentType]
     message_id: str | None = None
     lien_depot: str | None = None
-    statut: Literal["a_envoyer", "deja_preparee", "aucune_piece_manquante", "sans_email"]
+    statut: Literal[
+        "a_envoyer",
+        "a_valider",
+        "bloque",
+        "deja_preparee",
+        "aucune_piece_manquante",
+        "sans_email",
+    ]
     human_approval_required: bool = False
     refus_decision_proprietaire: bool = True
     created_at: str
@@ -4644,6 +4683,86 @@ def _message_delivery_status(
     if mode == "jamais":
         return "bloque", False
     return "a_valider", True
+
+
+def _insert_agent_candidate_reply(
+    connection: sqlite3.Connection,
+    payload: AgentCandidateReplyCreate,
+) -> sqlite3.Row:
+    """Create an agent response and apply the owner's delivery policy."""
+
+    application = connection.execute(
+        """
+        SELECT * FROM owner_applications
+        WHERE id = ? AND workspace_id = ? AND property_id = ?
+        """,
+        (payload.candidature_id, payload.workspace_id, payload.property_id),
+    ).fetchone()
+    if application is None:
+        raise HTTPException(status_code=404, detail="Candidature introuvable pour cette mission d'agent.")
+
+    existing_conversation = connection.execute(
+        "SELECT channel FROM conversations WHERE workspace_id = ? AND application_id = ?",
+        (payload.workspace_id, payload.candidature_id),
+    ).fetchone()
+    channel = payload.canal or (existing_conversation["channel"] if existing_conversation else "email")
+    delivery_status, _ = _message_delivery_status(connection, payload.workspace_id, "reponses_agents")
+    conversation = _get_or_create_conversation(
+        connection,
+        workspace_id=payload.workspace_id,
+        property_id=payload.property_id,
+        application_id=payload.candidature_id,
+        channel=channel,
+        subject=payload.sujet,
+    )
+    message_id = f"message-candidat-{uuid4().hex[:16]}"
+    recipient = application["candidat_email"]
+    if channel in {"whatsapp", "telegram"}:
+        endpoint = connection.execute(
+            """
+            SELECT external_contact_id FROM candidate_channel_endpoints
+            WHERE workspace_id = ? AND application_id = ? AND channel = ? AND status = 'actif'
+            """,
+            (payload.workspace_id, payload.candidature_id, channel),
+        ).fetchone()
+        recipient = endpoint["external_contact_id"] if endpoint else ""
+    connection.execute(
+        """
+        INSERT INTO candidate_messages(
+            id, workspace_id, application_id, property_id, conversation_id,
+            direction, sujet, contenu, source, statut, channel,
+            in_reply_to, from_address, to_address, created_at
+        ) VALUES (?, ?, ?, ?, ?, 'sortant', ?, ?, 'agent', ?, ?, ?, ?, ?, datetime('now'))
+        """,
+        (
+            message_id,
+            payload.workspace_id,
+            payload.candidature_id,
+            payload.property_id,
+            conversation["id"],
+            _clean_text(payload.sujet, 160),
+            _clean_text(payload.contenu, 100_000),
+            delivery_status,
+            channel,
+            _clean_text(payload.repond_a, 500),
+            "piaule-fiction",
+            _clean_text(recipient, 500),
+        ),
+    )
+    _touch_conversation(connection, conversation["id"], subject=payload.sujet)
+    _record_audit_event(
+        connection,
+        workspace_id=payload.workspace_id,
+        actor_type="agent",
+        actor_id=payload.agent_run_id or "agent-communication",
+        event_name="reponse_agent_preparee",
+        entity_type="candidate_message",
+        entity_id=message_id,
+        property_id=payload.property_id,
+        application_id=payload.candidature_id,
+        metadata={"canal": channel, "statut": delivery_status},
+    )
+    return connection.execute("SELECT * FROM candidate_messages WHERE id = ?", (message_id,)).fetchone()
 
 
 def _candidate_message_from_row(row: sqlite3.Row) -> CandidateMessage:
@@ -10891,6 +11010,199 @@ def create_conversation_message(
     return _candidate_message_from_row(row)
 
 
+@app.post(
+    "/api/internal/candidatures/reponses-agent",
+    response_model=CandidateMessage,
+    status_code=201,
+)
+def create_agent_candidate_reply(
+    payload: AgentCandidateReplyCreate,
+    request: Request,
+) -> CandidateMessage:
+    """Prepare an agent reply and apply the owner's automation policy."""
+
+    _agent_internal_auth(request)
+    with closing(_connect()) as connection:
+        row = _insert_agent_candidate_reply(connection, payload)
+        connection.commit()
+    return _candidate_message_from_row(row)
+
+
+def _decide_candidate_message(
+    message_id: str,
+    *,
+    decision: Literal["valider", "bloquer"],
+    payload: CandidateMessageDecision,
+    owner: Candidate,
+) -> CandidateMessage:
+    """Approve or block one agent-created candidate response."""
+
+    reason = _clean_text(payload.motif, 2_000)
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM candidate_messages
+            WHERE id = ? AND workspace_id = ? AND direction = 'sortant'
+            """,
+            (message_id, owner.workspace_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Réponse candidate introuvable dans ce workspace.")
+        if row["source"] != "agent":
+            raise HTTPException(status_code=409, detail="Cette réponse n'est pas une proposition d'agent.")
+        if decision == "valider":
+            if row["statut"] != "a_valider":
+                raise HTTPException(status_code=409, detail="Cette réponse n'attend pas une validation.")
+            next_status = "a_envoyer"
+            event_name = "reponse_agent_validee"
+        else:
+            if row["statut"] not in {"a_valider", "a_envoyer"}:
+                raise HTTPException(status_code=409, detail="Cette réponse ne peut plus être bloquée.")
+            next_status = "bloque"
+            event_name = "reponse_agent_bloquee"
+        now = _iso_now()
+        connection.execute(
+            "UPDATE candidate_messages SET statut = ? WHERE id = ? AND workspace_id = ?",
+            (next_status, message_id, owner.workspace_id),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name=event_name,
+            entity_type="candidate_message",
+            entity_id=message_id,
+            property_id=row["property_id"],
+            application_id=row["application_id"],
+            metadata={"motif": reason, "statut": next_status, "decide_le": now},
+        )
+        connection.commit()
+        updated = connection.execute(
+            "SELECT * FROM candidate_messages WHERE id = ?", (message_id,)
+        ).fetchone()
+    return _candidate_message_from_row(updated)
+
+
+@app.post("/api/messages/{message_id}/valider", response_model=CandidateMessage)
+def validate_agent_candidate_reply(
+    message_id: str,
+    payload: CandidateMessageDecision,
+    owner: Candidate = Depends(current_candidate),
+) -> CandidateMessage:
+    return _decide_candidate_message(message_id, decision="valider", payload=payload, owner=owner)
+
+
+@app.post("/api/messages/{message_id}/bloquer", response_model=CandidateMessage)
+def block_agent_candidate_reply(
+    message_id: str,
+    payload: CandidateMessageDecision,
+    owner: Candidate = Depends(current_candidate),
+) -> CandidateMessage:
+    return _decide_candidate_message(message_id, decision="bloquer", payload=payload, owner=owner)
+
+
+@app.get(
+    "/api/internal/canaux/{canal}/sortants",
+    response_model=list[ChannelOutboundMessage],
+)
+def claim_channel_outbound_messages(
+    canal: Literal["whatsapp", "telegram"],
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[ChannelOutboundMessage]:
+    """Claim approved responses for the WhatsApp/Telegram adapter."""
+
+    _channel_internal_auth(request)
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            """
+            SELECT m.*, e.external_contact_id, e.external_thread_id
+            FROM candidate_messages m
+            JOIN candidate_channel_endpoints e
+              ON e.workspace_id = m.workspace_id
+             AND e.application_id = m.application_id
+             AND e.channel = m.channel
+             AND e.status = 'actif'
+            WHERE m.channel = ? AND m.direction = 'sortant' AND m.statut = 'a_envoyer'
+            ORDER BY m.created_at, m.id
+            LIMIT ?
+            """,
+            (canal, limit),
+        ).fetchall()
+        for row in rows:
+            connection.execute(
+                "UPDATE candidate_messages SET statut = 'en_cours' WHERE id = ? AND statut = 'a_envoyer'",
+                (row["id"],),
+            )
+        connection.commit()
+    return [
+        ChannelOutboundMessage(
+            id=row["id"],
+            candidature_id=row["application_id"],
+            canal=canal,
+            identifiant_contact_externe=row["external_contact_id"],
+            identifiant_fil_externe=row["external_thread_id"],
+            sujet=row["sujet"],
+            contenu=row["contenu"],
+            statut="en_cours",
+        )
+        for row in rows
+    ]
+
+
+@app.post(
+    "/api/internal/canaux/messages/{message_id}/resultat",
+    response_model=CandidateMessage,
+)
+def record_channel_outbound_result(
+    message_id: str,
+    payload: ChannelOutboundResult,
+    request: Request,
+) -> CandidateMessage:
+    """Record the result returned by a WhatsApp/Telegram adapter."""
+
+    _channel_internal_auth(request)
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM candidate_messages
+            WHERE id = ? AND direction = 'sortant' AND channel IN ('whatsapp', 'telegram')
+            """,
+            (message_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Message sortant introuvable.")
+        if row["statut"] not in {"a_envoyer", "en_cours"}:
+            raise HTTPException(status_code=409, detail="Ce message n'est plus en attente d'envoi.")
+        next_status = "envoye" if payload.succes else "erreur"
+        external_id = _clean_text(payload.message_externe_id, 500)
+        error = "" if payload.succes else _clean_text(payload.erreur, 1_000)
+        connection.execute(
+            """
+            UPDATE candidate_messages
+            SET statut = ?, external_message_id = ?, last_error = ?, sent_at = CASE WHEN ? = 'envoye' THEN datetime('now') ELSE sent_at END
+            WHERE id = ?
+            """,
+            (next_status, external_id, error, next_status, message_id),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=row["workspace_id"],
+            actor_type="connecteur",
+            actor_id=row["channel"],
+            event_name="reponse_canal_externe_envoyee" if payload.succes else "reponse_canal_externe_echec",
+            entity_type="candidate_message",
+            entity_id=message_id,
+            property_id=row["property_id"],
+            application_id=row["application_id"],
+            metadata={"message_externe_id": external_id, "erreur": error},
+        )
+        connection.commit()
+        updated = connection.execute("SELECT * FROM candidate_messages WHERE id = ?", (message_id,)).fetchone()
+    return _candidate_message_from_row(updated)
+
+
 @app.get(
     "/api/biens/{property_id}/candidatures/{application_id}/messages",
     response_model=list[CandidateMessage],
@@ -11658,7 +11970,7 @@ def agent_request_missing_documents(
         ).fetchone()
     return _candidate_followup_from_row(
         row,
-        status="a_envoyer",
+        status=message_status,
         link=deposit_link,
         human_approval_required=human_approval_required,
     )
