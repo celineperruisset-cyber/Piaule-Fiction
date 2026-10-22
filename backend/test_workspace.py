@@ -2405,6 +2405,8 @@ def test_external_channel_message_is_threaded_idempotently_and_stores_attachment
         main.UPLOAD_DIRECTORY = root / "uploads"
         main.WHATSAPP_CHANNEL_TOKEN = "whatsapp-test-token"
         main.CHANNEL_INTERNAL_TOKEN = "channel-internal-test-token"
+        main.WHATSAPP_VERIFY_TOKEN = "whatsapp-verify-token"
+        main.WHATSAPP_API_TOKEN = "whatsapp-api-token"
         owner = TestClient(main.app)
 
         created = owner.post(
@@ -2556,6 +2558,32 @@ def test_external_channel_message_is_threaded_idempotently_and_stores_attachment
         )
         assert result.status_code == 200
         assert result.json()["statut"] == "envoye"
+        channel_status = owner.get("/api/parametres/canaux")
+        assert channel_status.status_code == 200
+        whatsapp_status = next(item for item in channel_status.json() if item["canal"] == "whatsapp")
+        assert whatsapp_status["reception_configuree"] is True
+        assert whatsapp_status["envoi_configure"] is True
+        assert whatsapp_status["pret_pour_production"] is True
+        assert whatsapp_status["liaisons_actives"] == 1
+        handshake = owner.get(
+            "/api/webhooks/whatsapp",
+            params={
+                "hub.mode": "subscribe",
+                "hub.verify_token": "whatsapp-verify-token",
+                "hub.challenge": "challenge-123",
+            },
+        )
+        assert handshake.status_code == 200
+        assert handshake.text == "challenge-123"
+        refused_handshake = owner.get(
+            "/api/webhooks/whatsapp",
+            params={
+                "hub.mode": "subscribe",
+                "hub.verify_token": "wrong-token",
+                "hub.challenge": "challenge-123",
+            },
+        )
+        assert refused_handshake.status_code == 403
 
         policy = owner.put(
             "/api/parametres/automatisation",

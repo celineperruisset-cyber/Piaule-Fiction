@@ -35,7 +35,7 @@ from urllib.request import Request as URLRequest, urlopen
 from uuid import uuid4
 
 from fastapi import Body, Cookie, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from .listing_pipeline import SELOGER_SOURCE, demo_listings
@@ -72,6 +72,10 @@ CHANNEL_WEBHOOK_TOKEN = os.getenv("PIAULE_CHANNEL_WEBHOOK_TOKEN", "").strip()
 WHATSAPP_CHANNEL_TOKEN = os.getenv("PIAULE_WHATSAPP_WEBHOOK_TOKEN", "").strip()
 TELEGRAM_CHANNEL_TOKEN = os.getenv("PIAULE_TELEGRAM_WEBHOOK_TOKEN", "").strip()
 CHANNEL_INTERNAL_TOKEN = os.getenv("PIAULE_CHANNEL_INTERNAL_TOKEN", "").strip()
+WHATSAPP_VERIFY_TOKEN = os.getenv("PIAULE_WHATSAPP_VERIFY_TOKEN", "").strip()
+WHATSAPP_API_TOKEN = os.getenv("PIAULE_WHATSAPP_API_TOKEN", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("PIAULE_TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_WEBHOOK_SECRET = os.getenv("PIAULE_TELEGRAM_WEBHOOK_SECRET", "").strip()
 CANDIDATE_PORTAL_BASE_URL = os.getenv(
     "PIAULE_CANDIDATE_PORTAL_BASE_URL",
     "http://127.0.0.1:5173/candidature.html",
@@ -1418,6 +1422,15 @@ class ChannelOutboundResult(BaseModel):
     message_externe_id: str = Field(default="", max_length=500)
     succes: bool
     erreur: str = Field(default="", max_length=1000)
+
+
+class ChannelIntegrationStatus(BaseModel):
+    canal: Literal["whatsapp", "telegram"]
+    reception_configuree: bool
+    envoi_configure: bool
+    liaisons_actives: int
+    messages_sortants_en_attente: int
+    pret_pour_production: bool
 
 
 ConversationChannel = Literal["email", "portail_candidat", "telegram", "whatsapp"]
@@ -10542,6 +10555,72 @@ def store_channel_attachment(
             stored_path.unlink(missing_ok=True)
             raise
     return _channel_attachment_from_row(updated)
+
+
+@app.get(
+    "/api/parametres/canaux",
+    response_model=list[ChannelIntegrationStatus],
+)
+def list_channel_integration_status(
+    owner: Candidate = Depends(current_candidate),
+) -> list[ChannelIntegrationStatus]:
+    """Expose provider readiness without returning any credential."""
+
+    result: list[ChannelIntegrationStatus] = []
+    for canal, reception_configuree, envoi_configure in (
+        (
+            "whatsapp",
+            bool(WHATSAPP_CHANNEL_TOKEN and WHATSAPP_VERIFY_TOKEN),
+            bool(WHATSAPP_API_TOKEN),
+        ),
+        (
+            "telegram",
+            bool(TELEGRAM_CHANNEL_TOKEN and TELEGRAM_WEBHOOK_SECRET),
+            bool(TELEGRAM_BOT_TOKEN),
+        ),
+    ):
+        with closing(_connect()) as connection:
+            active_links = connection.execute(
+                """
+                SELECT COUNT(*) AS count FROM candidate_channel_endpoints
+                WHERE workspace_id = ? AND channel = ? AND status = 'actif'
+                """,
+                (owner.workspace_id, canal),
+            ).fetchone()["count"]
+            pending_outbound = connection.execute(
+                """
+                SELECT COUNT(*) AS count FROM candidate_messages
+                WHERE workspace_id = ? AND channel = ?
+                  AND direction = 'sortant' AND statut IN ('a_envoyer', 'en_cours')
+                """,
+                (owner.workspace_id, canal),
+            ).fetchone()["count"]
+        result.append(
+            ChannelIntegrationStatus(
+                canal=canal,
+                reception_configuree=reception_configuree,
+                envoi_configure=envoi_configure,
+                liaisons_actives=int(active_links),
+                messages_sortants_en_attente=int(pending_outbound),
+                pret_pour_production=(reception_configuree and envoi_configure),
+            )
+        )
+    return result
+
+
+@app.get("/api/webhooks/whatsapp")
+def verify_whatsapp_webhook(
+    mode: str = Query(default="", alias="hub.mode"),
+    verify_token: str = Query(default="", alias="hub.verify_token"),
+    challenge: str = Query(default="", alias="hub.challenge"),
+) -> PlainTextResponse:
+    """Complete Meta's webhook handshake without exposing the verify token."""
+
+    if not WHATSAPP_VERIFY_TOKEN:
+        raise HTTPException(status_code=503, detail="Le jeton de vérification WhatsApp n'est pas configuré.")
+    if mode != "subscribe" or not hmac.compare_digest(verify_token, WHATSAPP_VERIFY_TOKEN):
+        raise HTTPException(status_code=403, detail="Vérification WhatsApp refusée.")
+    return PlainTextResponse(challenge)
 
 
 @app.get("/api/candidature-acces/{token}/visites", response_model=list[CandidateVisit])
