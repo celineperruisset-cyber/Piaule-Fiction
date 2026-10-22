@@ -14,12 +14,13 @@
 2. Création d'un bien avec règles de location.
 3. Tableau des candidatures et statuts explicables.
 4. Coffre privé et versionné pour les pièces.
-5. Complétude, lisibilité et cohérence des dossiers.
-6. Agent de demande de pièce manquante au candidat.
-7. Comparaison multi-dossiers avec critères visibles.
-8. File de validation avant transmission ou engagement.
-9. Calendrier de visites et historique.
-10. Journal d'audit, export et suppression.
+5. Contrôle antivirus des fichiers reçus avec ClamAV, avant conservation ou analyse.
+6. Complétude, lisibilité et cohérence des dossiers.
+7. Agent de demande de pièce manquante au candidat.
+8. Comparaison multi-dossiers avec critères visibles.
+9. File de validation avant transmission ou engagement.
+10. Calendrier de visites et historique.
+11. Journal d'audit, export et suppression.
 
 Le centre d'actions, de validations et d'audit est maintenant persistant côté backend. Les agents peuvent enregistrer une mission et proposer une action avec une empreinte et une clé d'idempotence. Le propriétaire peut autoriser ou refuser la proposition, et une exécution prématurée est bloquée. L'exécution actuelle ne fait qu'enregistrer le résultat de test ; elle ne déclenche encore aucun connecteur externe.
 

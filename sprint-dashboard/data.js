@@ -28,6 +28,7 @@ const initialTaskStatuses = {
   "property-1": "done",
   "candidate-1": "done",
   "document-1": "done",
+  "clamav-1": "doing",
   "agent-1": "todo",
   "validation-1": "done",
   "visit-1": "done",
@@ -186,7 +187,8 @@ const sprintDays = [
     task("candidate-1", "Créer le pipeline candidat", "build", "core", 150, "Permettre une lecture par statut et par prochaine action.", ["Créer les statuts.", "Rattacher au bien.", "Dédoublonner.", "Afficher la provenance."], "Une candidature se suit de réception à validation.")
   ]},
   { id: "day-5", number: 5, date: "Semaine 2", shortDate: "Pièces", title: "Boucler la complétude", outcome: "Faire demander la bonne pièce au candidat.", deliverable: "Dossier avec statuts et demande ciblée.", tasks: [
-    task("document-1", "Construire le coffre et la demande", "build", "core", 180, "Résoudre les dossiers incomplets sans sollicitation inutile.", ["Classer les pièces.", "Calculer les manquants.", "Envoyer la demande depuis la boîte autorisée.", "Rattacher la réponse."], "Une pièce reçue relance la vérification du bon dossier.", [R.cnilDocs, R.dossierDocs])
+    task("document-1", "Construire le coffre et la demande", "build", "core", 180, "Résoudre les dossiers incomplets sans sollicitation inutile.", ["Classer les pièces.", "Calculer les manquants.", "Envoyer la demande depuis la boîte autorisée.", "Rattacher la réponse."], "Une pièce reçue relance la vérification du bon dossier.", [R.cnilDocs, R.dossierDocs]),
+    task("clamav-1", "Activer le contrôle antivirus des pièces", "build", "core", 90, "Bloquer les fichiers infectés avant leur conservation ou leur analyse.", ["Installer ClamAV sur le VPS.", "Activer le contrôle dans l'environnement de test.", "Tester un fichier sain et un fichier détecté.", "Journaliser le résultat sans prétendre certifier l'authenticité du document."], "Chaque fichier reçu obtient un état antivirus explicite ; un fichier menaçant est bloqué et un contrôle non disponible est signalé.")
   ]},
   { id: "day-6", number: 6, date: "Semaine 2", shortDate: "Agents", title: "Donner un rôle à chaque agent", outcome: "Construire une équipe contrôlable.", deliverable: "Contrats et preuves d'agents.", tasks: [
     task("agent-1", "Écrire les contrats d'agents", "build", "core", 150, "Éviter un agent généraliste impossible à auditer.", ["Définir les entrées et sorties.", "Séparer faits et hypothèses.", "Définir les permissions.", "Prévoir l'escalade."], "Chaque agent a une responsabilité et une limite testables.")
