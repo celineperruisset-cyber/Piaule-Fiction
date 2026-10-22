@@ -1521,6 +1521,23 @@ def test_inbound_email_prefers_reply_to_and_keeps_thread_headers():
         assert inbound.json()["in_reply_to"] == "<lbc-root@example.test>"
         assert inbound.json()["references"].startswith("<lbc-root@example.test>")
         assert inbound.json()["statut"] == "associee"
+        assert inbound.json()["reponse_id"]
+
+        draft = owner.get(f"/api/candidatures/inbox/{inbound.json()['id']}/reponse")
+        assert draft.status_code == 200
+        assert draft.json()["statut"] == "pret_a_copier"
+        assert "https://piaulefiction.fr/candidature.html?access=" in draft.json()["contenu"]
+        assert draft.json()["lien_piaule"] in draft.json()["contenu"]
+
+        external_link = owner.put(
+            f"/api/candidatures/inbox/{inbound.json()['id']}/reponse",
+            json={"url_externe": "https://www.leboncoin.fr/messages/123"},
+        )
+        assert external_link.status_code == 200
+        assert external_link.json()["url_externe"].endswith("/123")
+        copied = owner.post(f"/api/candidatures/inbox/{inbound.json()['id']}/reponse/copier")
+        assert copied.status_code == 200
+        assert copied.json()["statut"] == "copie"
 
         conversations = owner.get("/api/messages/conversations")
         assert conversations.status_code == 200

@@ -1108,9 +1108,33 @@ class InboundApplicationMessage(BaseModel):
     reply_to: str = ""
     in_reply_to: str = ""
     references: str = ""
+    reponse_id: str | None = None
     statut: Literal["recue", "en_analyse", "associee", "a_verifier", "rejetee"]
     candidature_id: str | None = None
     recu_le: str
+
+
+ExternalReplyDraftStatus = Literal["brouillon", "pret_a_copier", "copie"]
+
+
+class ExternalReplyDraft(BaseModel):
+    id: str
+    workspace_id: str
+    message_entrant_id: str
+    candidature_id: str
+    bien_id: str
+    plateforme: str
+    contenu: str
+    lien_piaule: str
+    url_externe: str = ""
+    statut: ExternalReplyDraftStatus
+    expire_le: int
+    created_at: str
+    updated_at: str
+
+
+class ExternalReplyDraftUpdate(BaseModel):
+    url_externe: str = Field(default="", max_length=1000)
 
 
 ApplicationDocumentType = Literal[
@@ -1727,6 +1751,7 @@ def _ensure_database() -> None:
                 pieces_jointes_json TEXT NOT NULL DEFAULT '[]',
                 statut TEXT NOT NULL,
                 application_id TEXT,
+                reply_draft_id TEXT,
                 recu_le TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 UNIQUE(workspace_id, message_id),
@@ -1883,6 +1908,27 @@ def _ensure_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS conversations_workspace_idx ON conversations(workspace_id, updated_at);
             CREATE INDEX IF NOT EXISTS conversations_property_idx ON conversations(property_id, updated_at);
+            CREATE TABLE IF NOT EXISTS external_reply_drafts (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                inbound_message_id TEXT NOT NULL UNIQUE,
+                application_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                content TEXT NOT NULL,
+                piaule_url TEXT NOT NULL,
+                external_url TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pret_a_copier',
+                expires_at REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(inbound_message_id) REFERENCES inbound_application_messages(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS external_reply_drafts_workspace_idx
+                ON external_reply_drafts(workspace_id, updated_at);
             CREATE TABLE IF NOT EXISTS workspace_automation_policies (
                 workspace_id TEXT PRIMARY KEY,
                 completeness_mode TEXT NOT NULL DEFAULT 'automatique',
@@ -2402,6 +2448,7 @@ def _ensure_database() -> None:
             ("reply_to", "TEXT NOT NULL DEFAULT ''"),
             ("in_reply_to", "TEXT NOT NULL DEFAULT ''"),
             ("references_header", "TEXT NOT NULL DEFAULT ''"),
+            ("reply_draft_id", "TEXT"),
         ):
             _ensure_column(connection, "inbound_application_messages", column, definition)
         for column, definition in (
@@ -4068,6 +4115,7 @@ def _inbound_message_from_row(row: sqlite3.Row) -> InboundApplicationMessage:
         reply_to=row["reply_to"],
         in_reply_to=row["in_reply_to"],
         references=row["references_header"],
+        reponse_id=row["reply_draft_id"],
         objet=row["objet"],
         contenu_texte=row["contenu_texte"],
         pieces_jointes=json.loads(row["pieces_jointes_json"] or "[]"),
@@ -4482,6 +4530,95 @@ def _issue_candidate_access_link(
         (link_id, workspace_id, application_id, property_id, token_hash, expires_at),
     )
     return link_id, token, int(expires_at)
+
+
+def _external_reply_draft_from_row(row: sqlite3.Row) -> ExternalReplyDraft:
+    return ExternalReplyDraft(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        message_entrant_id=row["inbound_message_id"],
+        candidature_id=row["application_id"],
+        bien_id=row["property_id"],
+        plateforme=row["platform"],
+        contenu=row["content"],
+        lien_piaule=row["piaule_url"],
+        url_externe=row["external_url"],
+        statut=row["status"],
+        expire_le=int(row["expires_at"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _prepare_external_reply_draft(
+    connection: sqlite3.Connection, inbound_message_id: str
+) -> sqlite3.Row | None:
+    """Prepare a copyable reply without connecting to the external platform."""
+
+    existing = connection.execute(
+        "SELECT * FROM external_reply_drafts WHERE inbound_message_id = ?",
+        (inbound_message_id,),
+    ).fetchone()
+    if existing is not None:
+        return existing
+
+    message = connection.execute(
+        """
+        SELECT m.*, a.candidat_prenom, a.candidat_email, c.canal AS platform
+        FROM inbound_application_messages m
+        JOIN owner_applications a ON a.id = m.application_id
+        JOIN application_channels c ON c.id = m.channel_id
+        WHERE m.id = ? AND m.application_id IS NOT NULL
+        """,
+        (inbound_message_id,),
+    ).fetchone()
+    if message is None:
+        return None
+
+    link_id, token, expires_at = _issue_candidate_access_link(
+        connection,
+        workspace_id=message["workspace_id"],
+        application_id=message["application_id"],
+        property_id=message["property_id"],
+    )
+    piaule_url = _candidate_access_url(token)
+    candidate_name = message["candidat_prenom"] or ""
+    greeting = f"Bonjour {candidate_name}," if candidate_name else "Bonjour,"
+    content = (
+        f"{greeting}\n\n"
+        "Merci pour votre message concernant le logement. "
+        "Pour déposer votre dossier et poursuivre les échanges avec le propriétaire, "
+        f"utilisez ce lien personnel : {piaule_url}\n\n"
+        "Vous pourrez y transmettre les pièces nécessaires et suivre la suite de votre candidature."
+    )
+    draft_id = f"reply-draft-{uuid4().hex[:16]}"
+    connection.execute(
+        """
+        INSERT INTO external_reply_drafts(
+            id, workspace_id, inbound_message_id, application_id, property_id,
+            platform, content, piaule_url, external_url, status, expires_at,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 'pret_a_copier', ?, datetime('now'), datetime('now'))
+        """,
+        (
+            draft_id,
+            message["workspace_id"],
+            inbound_message_id,
+            message["application_id"],
+            message["property_id"],
+            message["platform"],
+            content,
+            piaule_url,
+            expires_at,
+        ),
+    )
+    connection.execute(
+        "UPDATE inbound_application_messages SET reply_draft_id = ? WHERE id = ?",
+        (draft_id, inbound_message_id),
+    )
+    return connection.execute(
+        "SELECT * FROM external_reply_drafts WHERE id = ?", (draft_id,)
+    ).fetchone()
 
 
 def _active_candidate_access_row(token: str) -> sqlite3.Row:
@@ -8616,6 +8753,121 @@ def list_inbound_application_messages(
     return [_inbound_message_from_row(row) for row in rows]
 
 
+@app.get(
+    "/api/candidatures/inbox/{message_id}/reponse",
+    response_model=ExternalReplyDraft,
+)
+def get_external_reply_draft(
+    message_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> ExternalReplyDraft:
+    """Return the agent-prepared text and candidate link for manual external sending."""
+
+    with closing(_connect()) as connection:
+        inbound = connection.execute(
+            """
+            SELECT * FROM inbound_application_messages
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (message_id, owner.workspace_id),
+        ).fetchone()
+        if inbound is None:
+            raise HTTPException(status_code=404, detail="Message entrant introuvable.")
+        draft = _prepare_external_reply_draft(connection, message_id)
+        if draft is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Associez d'abord ce message à une candidature.",
+            )
+        connection.commit()
+    return _external_reply_draft_from_row(draft)
+
+
+@app.put(
+    "/api/candidatures/inbox/{message_id}/reponse",
+    response_model=ExternalReplyDraft,
+)
+def update_external_reply_draft(
+    message_id: str,
+    payload: ExternalReplyDraftUpdate,
+    owner: Candidate = Depends(current_candidate),
+) -> ExternalReplyDraft:
+    """Store the optional external conversation URL opened by the owner."""
+
+    external_url = _clean_text(payload.url_externe, 1000)
+    if external_url and not external_url.startswith("https://"):
+        raise HTTPException(status_code=422, detail="Le lien externe doit commencer par https://.")
+    with closing(_connect()) as connection:
+        draft = connection.execute(
+            """
+            SELECT * FROM external_reply_drafts
+            WHERE inbound_message_id = ? AND workspace_id = ?
+            """,
+            (message_id, owner.workspace_id),
+        ).fetchone()
+        if draft is None:
+            raise HTTPException(status_code=404, detail="Brouillon de réponse introuvable.")
+        connection.execute(
+            """
+            UPDATE external_reply_drafts
+            SET external_url = ?, updated_at = datetime('now')
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (external_url, draft["id"], owner.workspace_id),
+        )
+        connection.commit()
+        draft = connection.execute(
+            "SELECT * FROM external_reply_drafts WHERE id = ?", (draft["id"],)
+        ).fetchone()
+    return _external_reply_draft_from_row(draft)
+
+
+@app.post(
+    "/api/candidatures/inbox/{message_id}/reponse/copier",
+    response_model=ExternalReplyDraft,
+)
+def mark_external_reply_draft_copied(
+    message_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> ExternalReplyDraft:
+    """Record that the owner copied the prepared response for the external platform."""
+
+    with closing(_connect()) as connection:
+        draft = connection.execute(
+            """
+            SELECT * FROM external_reply_drafts
+            WHERE inbound_message_id = ? AND workspace_id = ?
+            """,
+            (message_id, owner.workspace_id),
+        ).fetchone()
+        if draft is None:
+            raise HTTPException(status_code=404, detail="Brouillon de réponse introuvable.")
+        connection.execute(
+            """
+            UPDATE external_reply_drafts
+            SET status = 'copie', updated_at = datetime('now')
+            WHERE id = ? AND workspace_id = ?
+            """,
+            (draft["id"], owner.workspace_id),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="reponse_externe_copiee",
+            entity_type="external_reply_draft",
+            entity_id=draft["id"],
+            property_id=draft["property_id"],
+            application_id=draft["application_id"],
+        )
+        connection.commit()
+        draft = connection.execute(
+            "SELECT * FROM external_reply_drafts WHERE id = ?", (draft["id"],)
+        ).fetchone()
+    return _external_reply_draft_from_row(draft)
+
+
 def _store_inbound_attachment(
     connection: sqlite3.Connection,
     *,
@@ -8877,6 +9129,7 @@ def _ingest_inbound_application(
             application_id=matched_application_id,
             property_id=channel["property_id"],
         )
+        _prepare_external_reply_draft(connection, inbound_id)
     row = connection.execute(
         "SELECT * FROM inbound_application_messages WHERE id = ?",
         (inbound_id,),
@@ -8991,6 +9244,7 @@ def associate_inbound_application(
             application_id=payload.candidature_id,
             property_id=message["property_id"],
         )
+        _prepare_external_reply_draft(connection, message_id)
         connection.commit()
         row = connection.execute(
             "SELECT * FROM inbound_application_messages WHERE id = ? AND workspace_id = ?",
