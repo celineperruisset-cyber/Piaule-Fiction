@@ -1393,6 +1393,69 @@ def test_unified_owner_inbox_keeps_email_and_candidate_portal_in_one_conversatio
         assert outgoing.json()["conversation_id"] == conversation_id
 
 
+def test_owner_automation_policy_controls_agent_completeness_delivery():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        owner = TestClient(main.app)
+        assert owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "policy-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        ).status_code == 200
+
+        defaults = owner.get("/api/parametres/automatisation")
+        assert defaults.status_code == 200
+        assert defaults.json()["completude_candidat"] == "automatique"
+
+        updated = owner.put(
+            "/api/parametres/automatisation",
+            json={
+                "completude_candidat": "validation",
+                "reponses_agents": "validation",
+                "proposition_visite": "validation",
+                "publication_annonce": "validation",
+                "verification_officielle": "validation",
+                "refus_candidature": "validation",
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["completude_candidat"] == "validation"
+
+        property_id = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien politique",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue des règles",
+                "ville": "Lyon",
+            },
+        ).json()["id"]
+        application_id = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Demo",
+                "candidat_email": "alex-policy@example.test",
+            },
+        ).json()["id"]
+
+        followup = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/agent/relancer-completude"
+        )
+        assert followup.status_code == 201
+        assert followup.json()["human_approval_required"] is True
+        message = owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}/messages"
+        ).json()[0]
+        assert message["statut"] == "a_valider"
+
+
 def test_application_status_cycle_records_history_and_blocks_early_visit():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

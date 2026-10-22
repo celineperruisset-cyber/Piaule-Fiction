@@ -1260,6 +1260,7 @@ class OwnerCandidateMessageCreate(BaseModel):
 
 ConversationChannel = Literal["email", "portail_candidat", "telegram", "whatsapp"]
 ConversationStatus = Literal["ouverte", "en_attente", "fermee"]
+AutomationMode = Literal["automatique", "validation", "jamais"]
 
 
 class CandidateMessage(BaseModel):
@@ -1269,7 +1270,7 @@ class CandidateMessage(BaseModel):
     sujet: str
     contenu: str
     source: Literal["email", "portail_candidat", "agent", "proprietaire"]
-    statut: Literal["recu", "a_envoyer", "en_cours", "envoye", "erreur"]
+    statut: Literal["recu", "a_valider", "a_envoyer", "en_cours", "envoye", "erreur", "bloque"]
     conversation_id: str | None = None
     canal: ConversationChannel = "email"
     message_externe_id: str = ""
@@ -1301,6 +1302,25 @@ class ConversationMessageCreate(BaseModel):
     contenu: str = Field(min_length=1, max_length=5000)
     sujet: str = Field(default="", max_length=160)
     canal: ConversationChannel | None = None
+
+
+class OwnerAutomationPolicy(BaseModel):
+    completude_candidat: AutomationMode = "automatique"
+    reponses_agents: AutomationMode = "validation"
+    proposition_visite: AutomationMode = "validation"
+    publication_annonce: AutomationMode = "validation"
+    verification_officielle: AutomationMode = "validation"
+    refus_candidature: AutomationMode = "validation"
+    updated_at: str
+
+
+class OwnerAutomationPolicyUpdate(BaseModel):
+    completude_candidat: AutomationMode = "automatique"
+    reponses_agents: AutomationMode = "validation"
+    proposition_visite: AutomationMode = "validation"
+    publication_annonce: AutomationMode = "validation"
+    verification_officielle: AutomationMode = "validation"
+    refus_candidature: AutomationMode = "validation"
 
 
 class CandidateCompletenessFollowUp(BaseModel):
@@ -1854,6 +1874,17 @@ def _ensure_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS conversations_workspace_idx ON conversations(workspace_id, updated_at);
             CREATE INDEX IF NOT EXISTS conversations_property_idx ON conversations(property_id, updated_at);
+            CREATE TABLE IF NOT EXISTS workspace_automation_policies (
+                workspace_id TEXT PRIMARY KEY,
+                completeness_mode TEXT NOT NULL DEFAULT 'automatique',
+                agent_replies_mode TEXT NOT NULL DEFAULT 'validation',
+                visit_proposals_mode TEXT NOT NULL DEFAULT 'validation',
+                publication_mode TEXT NOT NULL DEFAULT 'validation',
+                official_verification_mode TEXT NOT NULL DEFAULT 'validation',
+                rejection_mode TEXT NOT NULL DEFAULT 'validation',
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+            );
             CREATE TABLE IF NOT EXISTS visit_slots (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -2194,6 +2225,7 @@ def _ensure_database() -> None:
                 missing_signature TEXT NOT NULL,
                 missing_types_json TEXT NOT NULL,
                 message_id TEXT NOT NULL,
+                human_approval_required INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 UNIQUE(workspace_id, application_id, missing_signature),
                 FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -2370,6 +2402,12 @@ def _ensure_database() -> None:
             ("read_at", "TEXT"),
         ):
             _ensure_column(connection, "candidate_messages", column, definition)
+        _ensure_column(
+            connection,
+            "candidate_completeness_followups",
+            "human_approval_required",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS candidate_messages_conversation_idx ON candidate_messages(conversation_id, created_at)"
         )
@@ -4300,6 +4338,57 @@ def _touch_conversation(
     )
 
 
+def _automation_policy_from_row(row: sqlite3.Row) -> OwnerAutomationPolicy:
+    return OwnerAutomationPolicy(
+        completude_candidat=row["completeness_mode"],
+        reponses_agents=row["agent_replies_mode"],
+        proposition_visite=row["visit_proposals_mode"],
+        publication_annonce=row["publication_mode"],
+        verification_officielle=row["official_verification_mode"],
+        refus_candidature=row["rejection_mode"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _ensure_automation_policy(
+    connection: sqlite3.Connection, workspace_id: str
+) -> sqlite3.Row:
+    row = connection.execute(
+        "SELECT * FROM workspace_automation_policies WHERE workspace_id = ?",
+        (workspace_id,),
+    ).fetchone()
+    if row is None:
+        connection.execute(
+            """
+            INSERT INTO workspace_automation_policies(
+                workspace_id, completeness_mode, agent_replies_mode,
+                visit_proposals_mode, publication_mode,
+                official_verification_mode, rejection_mode, updated_at
+            ) VALUES (?, 'automatique', 'validation', 'validation', 'validation', 'validation', 'validation', datetime('now'))
+            """,
+            (workspace_id,),
+        )
+        row = connection.execute(
+            "SELECT * FROM workspace_automation_policies WHERE workspace_id = ?",
+            (workspace_id,),
+        ).fetchone()
+    return row
+
+
+def _message_delivery_status(
+    connection: sqlite3.Connection, workspace_id: str, rule: str
+) -> tuple[str, bool]:
+    """Return the queue state and whether the owner must approve the message."""
+
+    policy = _automation_policy_from_row(_ensure_automation_policy(connection, workspace_id))
+    mode = getattr(policy, rule)
+    if mode == "automatique":
+        return "a_envoyer", False
+    if mode == "jamais":
+        return "bloque", False
+    return "a_valider", True
+
+
 def _candidate_message_from_row(row: sqlite3.Row) -> CandidateMessage:
     return CandidateMessage(
         id=row["id"],
@@ -4319,7 +4408,11 @@ def _candidate_message_from_row(row: sqlite3.Row) -> CandidateMessage:
 
 
 def _candidate_followup_from_row(
-    row: sqlite3.Row, *, status: str | None = None, link: str | None = None
+    row: sqlite3.Row,
+    *,
+    status: str | None = None,
+    link: str | None = None,
+    human_approval_required: bool | None = None,
 ) -> CandidateCompletenessFollowUp:
     return CandidateCompletenessFollowUp(
         id=row["id"],
@@ -4328,6 +4421,11 @@ def _candidate_followup_from_row(
         message_id=row["message_id"] or None,
         lien_depot=link,
         statut=status or "deja_preparee",
+        human_approval_required=(
+            bool(row["human_approval_required"])
+            if human_approval_required is None and "human_approval_required" in row.keys()
+            else bool(human_approval_required)
+        ),
         created_at=row["created_at"],
     )
 
@@ -9543,6 +9641,61 @@ def _application_for_owner(
     return row
 
 
+@app.get("/api/parametres/automatisation", response_model=OwnerAutomationPolicy)
+def get_owner_automation_policy(
+    owner: Candidate = Depends(current_candidate),
+) -> OwnerAutomationPolicy:
+    with closing(_connect()) as connection:
+        row = _ensure_automation_policy(connection, owner.workspace_id)
+        connection.commit()
+        return _automation_policy_from_row(row)
+
+
+@app.put("/api/parametres/automatisation", response_model=OwnerAutomationPolicy)
+def update_owner_automation_policy(
+    payload: OwnerAutomationPolicyUpdate,
+    owner: Candidate = Depends(current_candidate),
+) -> OwnerAutomationPolicy:
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        _ensure_automation_policy(connection, owner.workspace_id)
+        connection.execute(
+            """
+            UPDATE workspace_automation_policies
+            SET completeness_mode = ?, agent_replies_mode = ?,
+                visit_proposals_mode = ?, publication_mode = ?,
+                official_verification_mode = ?, rejection_mode = ?, updated_at = ?
+            WHERE workspace_id = ?
+            """,
+            (
+                payload.completude_candidat,
+                payload.reponses_agents,
+                payload.proposition_visite,
+                payload.publication_annonce,
+                payload.verification_officielle,
+                payload.refus_candidature,
+                now,
+                owner.workspace_id,
+            ),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="politique_automatisation_modifiee",
+            entity_type="workspace_automation_policy",
+            entity_id=owner.workspace_id,
+            metadata=payload.model_dump(),
+        )
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM workspace_automation_policies WHERE workspace_id = ?",
+            (owner.workspace_id,),
+        ).fetchone()
+    return _automation_policy_from_row(row)
+
+
 @app.get("/api/messages/conversations", response_model=list[Conversation])
 def list_owner_conversations(
     canal: ConversationChannel | None = None,
@@ -10404,6 +10557,9 @@ def agent_request_missing_documents(
             "Aucun autre document n'est nécessaire à ce stade. Nous vous recontacterons si une vérification "
             "fait apparaître une incohérence."
         )
+        message_status, human_approval_required = _message_delivery_status(
+            connection, owner.workspace_id, "completude_candidat"
+        )
         conversation = _get_or_create_conversation(
             connection,
             workspace_id=owner.workspace_id,
@@ -10418,7 +10574,7 @@ def agent_request_missing_documents(
                 id, workspace_id, application_id, property_id, conversation_id,
                 direction, sujet, contenu, source, statut, channel,
                 from_address, to_address, created_at
-            ) VALUES (?, ?, ?, ?, ?, 'sortant', ?, ?, 'agent', 'a_envoyer', 'email', ?, ?, datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, 'sortant', ?, ?, 'agent', ?, 'email', ?, ?, datetime('now'))
             """,
             (
                 message_id,
@@ -10428,6 +10584,7 @@ def agent_request_missing_documents(
                 conversation["id"],
                 "Pièces nécessaires pour votre candidature",
                 message_body,
+                message_status,
                 owner.email,
                 application["candidat_email"],
             ),
@@ -10438,8 +10595,9 @@ def agent_request_missing_documents(
             """
             INSERT INTO candidate_completeness_followups(
                 id, workspace_id, application_id, property_id,
-                missing_signature, missing_types_json, message_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                missing_signature, missing_types_json, message_id,
+                human_approval_required, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 followup_id,
@@ -10449,6 +10607,7 @@ def agent_request_missing_documents(
                 missing_signature,
                 json.dumps(missing_types, ensure_ascii=False),
                 message_id,
+                int(human_approval_required),
             ),
         )
         connection.commit()
@@ -10456,7 +10615,12 @@ def agent_request_missing_documents(
             "SELECT * FROM candidate_completeness_followups WHERE id = ?",
             (followup_id,),
         ).fetchone()
-    return _candidate_followup_from_row(row, status="a_envoyer", link=deposit_link)
+    return _candidate_followup_from_row(
+        row,
+        status="a_envoyer",
+        link=deposit_link,
+        human_approval_required=human_approval_required,
+    )
 
 
 @app.get("/api/biens/{property_id}/candidatures", response_model=list[OwnerApplication])
