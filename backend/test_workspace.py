@@ -2610,3 +2610,129 @@ def test_external_channel_message_is_threaded_idempotently_and_stores_attachment
         )
         assert blocked.status_code == 201
         assert blocked.json()["statut"] == "bloque"
+def test_candidate_document_download_delete_audited_and_verification_summary_is_explainable():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        owner = TestClient(main.app)
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner Secure",
+                "email": "secure-doc-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert created.status_code == 200
+        property_id = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Appartement documents privés",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue privée",
+                "ville": "Lyon",
+            },
+        ).json()["id"]
+        application_id = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Secure",
+                "candidat_email": "alex-secure@example.test",
+            },
+        ).json()["id"]
+        uploaded = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces",
+            data={"nom": "Pièce d'identité", "type": "identite"},
+            files={"file": ("identite.pdf", b"%PDF-private", "application/pdf")},
+        )
+        assert uploaded.status_code == 201
+        document_id = uploaded.json()["id"]
+
+        downloaded = owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces/{document_id}/telecharger"
+        )
+        assert downloaded.status_code == 200
+        assert downloaded.content == b"%PDF-private"
+        assert "no-store" in downloaded.headers["cache-control"]
+        audit = owner.get(
+            "/api/audit",
+            params={"entite_type": "piece_candidature", "entite_id": document_id},
+        )
+        assert audit.status_code == 200
+        assert audit.json()[0]["evenement"] == "piece_candidature_consultee"
+
+        summary = owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}/verification-summary"
+        )
+        assert summary.status_code == 200
+        assert summary.json()["niveau_global"] == "coherent_techniquement_non_authentifie"
+        assert summary.json()["pieces_avec_preuve_externe"] == 0
+        assert summary.json()["limites"]
+
+        deleted = owner.delete(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces/{document_id}"
+        )
+        assert deleted.status_code == 200
+        assert owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces/{document_id}/telecharger"
+        ).status_code == 404
+
+
+def test_agent_retry_runtime_status_and_database_backup_are_available_without_exposing_secrets():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.BACKUP_DIRECTORY = root / "backups"
+        main.AGENT_INTERNAL_TOKEN = "agent-runtime-test-token"
+        owner = TestClient(main.app)
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner Runtime",
+                "email": "runtime-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert created.status_code == 200
+        runtime = owner.get("/api/parametres/agents/runtime")
+        assert runtime.status_code == 200
+        assert runtime.json()["execution_reelle_active"] is False
+        assert "api_key" not in runtime.text.lower()
+
+        run = owner.post(
+            "/api/internal/agent-runs",
+            headers={"x-piaule-agent-token": "agent-runtime-test-token"},
+            json={
+                "workspace_id": created.json()["workspace_id"],
+                "type_agent": "agent-suivi",
+                "mission": "Tester la reprise sur erreur.",
+            },
+        )
+        assert run.status_code == 201
+        run_id = run.json()["id"]
+        failed = owner.put(
+            f"/api/internal/agent-runs/{run_id}",
+            headers={"x-piaule-agent-token": "agent-runtime-test-token"},
+            json={"statut": "failed", "erreur": "Erreur transitoire du fournisseur."},
+        )
+        assert failed.status_code == 200
+        assert failed.json()["tentatives"] == 0
+        retried = owner.post(
+            f"/api/internal/agent-runs/{run_id}/retry",
+            headers={"x-piaule-agent-token": "agent-runtime-test-token"},
+        )
+        assert retried.status_code == 200
+        assert retried.json()["statut"] == "queued"
+
+        backup = owner.post(
+            "/api/internal/maintenance/backup",
+            headers={"x-piaule-agent-token": "agent-runtime-test-token"},
+        )
+        assert backup.status_code == 200
+        assert backup.json()["taille_octets"] > 0
+        assert len(list(main.BACKUP_DIRECTORY.glob("*.sqlite3"))) == 1

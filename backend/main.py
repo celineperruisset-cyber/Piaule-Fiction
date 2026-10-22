@@ -35,7 +35,7 @@ from urllib.request import Request as URLRequest, urlopen
 from uuid import uuid4
 
 from fastapi import Body, Cookie, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, status
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from .listing_pipeline import SELOGER_SOURCE, demo_listings
@@ -76,6 +76,10 @@ WHATSAPP_VERIFY_TOKEN = os.getenv("PIAULE_WHATSAPP_VERIFY_TOKEN", "").strip()
 WHATSAPP_API_TOKEN = os.getenv("PIAULE_WHATSAPP_API_TOKEN", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("PIAULE_TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_WEBHOOK_SECRET = os.getenv("PIAULE_TELEGRAM_WEBHOOK_SECRET", "").strip()
+AI_PROVIDER = os.getenv("PIAULE_AI_PROVIDER", "non_configure").strip().lower()
+AI_MODEL = os.getenv("PIAULE_AI_MODEL", "").strip()
+AI_API_KEY = os.getenv("PIAULE_AI_API_KEY", "").strip()
+AI_MAX_REQUESTS_PER_DAY = max(1, int(os.getenv("PIAULE_AI_MAX_REQUESTS_PER_DAY", "1000")))
 CANDIDATE_PORTAL_BASE_URL = os.getenv(
     "PIAULE_CANDIDATE_PORTAL_BASE_URL",
     "http://127.0.0.1:5173/candidature.html",
@@ -90,6 +94,7 @@ DATABASE_PATH = Path(
     os.getenv("PIAULE_DATABASE_PATH", str(STATE_DIRECTORY / "piaule-fiction.sqlite3"))
 )
 UPLOAD_DIRECTORY = Path(os.getenv("PIAULE_UPLOAD_DIRECTORY", str(STATE_DIRECTORY / "uploads")))
+BACKUP_DIRECTORY = Path(os.getenv("PIAULE_BACKUP_DIRECTORY", str(STATE_DIRECTORY / "backups")))
 MAX_DOCUMENT_BYTES = 100 * 1024 * 1024
 ALLOWED_DOCUMENT_TYPES = {
     "pdf": {"application/pdf"},
@@ -401,6 +406,9 @@ class AgentRun(BaseModel):
     sortie: dict[str, object]
     preuves: list[dict[str, object]]
     erreur: str
+    tentatives: int = 0
+    tentatives_max: int = 3
+    prochaine_tentative_le: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
     created_at: str
@@ -412,6 +420,27 @@ class AgentRunStatusUpdate(BaseModel):
     sortie: dict[str, object] = Field(default_factory=dict)
     preuves: list[dict[str, object]] = Field(default_factory=list)
     erreur: str = Field(default="", max_length=4000)
+
+
+class AgentRuntimeStatus(BaseModel):
+    fournisseur: str
+    modele: str
+    configure: bool
+    execution_reelle_active: bool
+    limite_quotidienne: int
+    secret_present: bool
+    message: str
+
+
+class ProductionReadiness(BaseModel):
+    database: str
+    stockage_prive: str
+    sauvegarde: str
+    authentification: str
+    dossier_facile: str
+    canaux: dict[str, str]
+    fournisseur_ia: AgentRuntimeStatus
+    avertissements: list[str]
 
 
 AgentStatus = Literal["active", "paused"]
@@ -1242,6 +1271,18 @@ class ApplicationDocumentCheck(BaseModel):
 class ApplicationDocumentAnalysisResult(BaseModel):
     document: ApplicationDocument
     dernier_controle: ApplicationDocumentCheck
+
+
+class ApplicationVerificationSummary(BaseModel):
+    candidature_id: str
+    pieces_total: int
+    pieces_techniquement_coherentes: int
+    pieces_avec_anomalie: int
+    pieces_avec_preuve_externe: int
+    pieces_a_verifier: int
+    demandes_externes_en_attente: int
+    niveau_global: str
+    limites: list[str]
 
 
 class ApplicationVerificationRequestCreate(BaseModel):
@@ -2660,6 +2701,8 @@ def _ensure_database() -> None:
             _ensure_column(connection, "inbound_application_messages", column, definition)
         for column, definition in (
             ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("max_attempts", "INTEGER NOT NULL DEFAULT 3"),
+            ("next_retry_at", "TEXT"),
             ("sent_at", "TEXT"),
             ("last_error", "TEXT NOT NULL DEFAULT ''"),
             ("conversation_id", "TEXT"),
@@ -2676,6 +2719,15 @@ def _ensure_database() -> None:
             "candidate_completeness_followups",
             "human_approval_required",
             "INTEGER NOT NULL DEFAULT 0",
+        )
+        for column, definition in (
+            ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("max_attempts", "INTEGER NOT NULL DEFAULT 3"),
+            ("next_retry_at", "TEXT"),
+        ):
+            _ensure_column(connection, "agent_runs", column, definition)
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS agent_runs_queue_idx ON agent_runs(status, next_retry_at, created_at)"
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS candidate_messages_conversation_idx ON candidate_messages(conversation_id, created_at)"
@@ -2818,6 +2870,9 @@ def _agent_run_from_row(row: sqlite3.Row) -> AgentRun:
         sortie=json.loads(row["output_json"] or "{}"),
         preuves=json.loads(row["evidence_json"] or "[]"),
         erreur=row["error"],
+        tentatives=int(row["attempts"] or 0),
+        tentatives_max=int(row["max_attempts"] or 3),
+        prochaine_tentative_le=row["next_retry_at"],
         started_at=row["started_at"],
         finished_at=row["finished_at"],
         created_at=row["created_at"],
@@ -5738,8 +5793,21 @@ def _sync_demo_source() -> ListingSyncResult:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "product": PRODUCT, "mode": "synthetic"}
+def health() -> dict[str, object]:
+    """Small liveness/readiness signal without exposing secrets or database paths."""
+
+    try:
+        _ensure_database()
+        storage_ready = UPLOAD_DIRECTORY.exists() or UPLOAD_DIRECTORY.parent.exists()
+        return {
+            "status": "ok" if storage_ready else "degraded",
+            "product": PRODUCT,
+            "mode": "synthetic",
+            "database": "ok",
+            "stockage": "ok" if storage_ready else "a_initialiser",
+        }
+    except Exception:
+        return {"status": "degraded", "product": PRODUCT, "database": "indisponible"}
 
 
 @app.post("/api/compte")
@@ -6889,7 +6957,8 @@ def process_next_completeness_run(request: Request) -> AgentWorkerProcessResult:
         connection.execute(
             """
             UPDATE agent_runs
-            SET status = 'running', started_at = ?, updated_at = ?
+            SET status = 'running', attempts = attempts + 1, next_retry_at = NULL,
+                started_at = ?, updated_at = ?
             WHERE id = ? AND status = 'queued'
             """,
             (now, now, row["id"]),
@@ -6994,7 +7063,8 @@ def process_next_confidence_run(request: Request) -> AgentWorkerProcessResult:
         connection.execute(
             """
             UPDATE agent_runs
-            SET status = 'running', started_at = ?, updated_at = ?
+            SET status = 'running', attempts = attempts + 1, next_retry_at = NULL,
+                started_at = ?, updated_at = ?
             WHERE id = ? AND status = 'queued'
             """,
             (now, now, row["id"]),
@@ -11376,6 +11446,141 @@ def list_application_documents(
     return [_application_document_from_row(row) for row in rows]
 
 
+@app.get(
+    "/api/biens/{property_id}/candidatures/{application_id}/pieces/{document_id}/telecharger",
+    response_class=FileResponse,
+)
+def download_application_document(
+    property_id: str,
+    application_id: str,
+    document_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> FileResponse:
+    """Serve a candidate document only after an authenticated owner check.
+
+    Files never live under the public frontend directory and their generated
+    storage name is never exposed to the browser. Every consultation is
+    recorded without copying the document contents into the audit log.
+    """
+
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        row = _owned_application_document_row(connection, owner, property_id, application_id, document_id)
+        path = UPLOAD_DIRECTORY / row["stored_filename"]
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Le fichier de cette pièce n'est plus disponible.")
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="piece_candidature_consultee",
+            entity_type="piece_candidature",
+            entity_id=document_id,
+            property_id=property_id,
+            application_id=application_id,
+            metadata={"type": row["document_type"], "taille_octets": row["size_bytes"]},
+        )
+        connection.commit()
+    return FileResponse(
+        path,
+        media_type=row["content_type"],
+        filename=row["original_filename"],
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@app.delete("/api/biens/{property_id}/candidatures/{application_id}/pieces/{document_id}")
+def delete_application_document(
+    property_id: str,
+    application_id: str,
+    document_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> dict[str, object]:
+    """Permanently remove one candidate document after an owner check."""
+
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        row = _owned_application_document_row(connection, owner, property_id, application_id, document_id)
+        _record_audit_event(
+            connection,
+            workspace_id=owner.workspace_id,
+            actor_type="proprietaire",
+            actor_id=owner.email,
+            event_name="piece_candidature_supprimee",
+            entity_type="piece_candidature",
+            entity_id=document_id,
+            property_id=property_id,
+            application_id=application_id,
+            metadata={"type": row["document_type"], "taille_octets": row["size_bytes"]},
+        )
+        connection.execute(
+            "DELETE FROM application_documents WHERE id = ? AND workspace_id = ?",
+            (document_id, owner.workspace_id),
+        )
+        _refresh_application_status(connection, owner.workspace_id, application_id)
+        connection.commit()
+    (UPLOAD_DIRECTORY / row["stored_filename"]).unlink(missing_ok=True)
+    return {"ok": True, "piece_id": document_id, "supprimee": True}
+
+
+@app.get(
+    "/api/biens/{property_id}/candidatures/{application_id}/verification-summary",
+    response_model=ApplicationVerificationSummary,
+)
+def application_verification_summary(
+    property_id: str,
+    application_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> ApplicationVerificationSummary:
+    """Expose a safe, explainable verification summary for the frontend."""
+
+    with closing(_connect()) as connection:
+        _application_for_owner(connection, owner, property_id, application_id)
+        documents = connection.execute(
+            "SELECT * FROM application_documents WHERE workspace_id = ? AND application_id = ?",
+            (owner.workspace_id, application_id),
+        ).fetchall()
+        pending = connection.execute(
+            """
+            SELECT COUNT(*) AS total FROM application_verification_requests
+            WHERE workspace_id = ? AND application_id = ?
+              AND status IN ('en_attente_consentement', 'en_attente_source')
+            """,
+            (owner.workspace_id, application_id),
+        ).fetchone()["total"]
+    with_anomalies = sum(bool(json.loads(row["anomalies_json"] or "[]")) for row in documents)
+    external_proof = sum(row["verification_level"] in {"source_partenaire", "source_officielle"} for row in documents)
+    technical_ok = sum(
+        row["verification_level"] in {"controles_techniques", "revue_humaine", "source_partenaire", "source_officielle"}
+        and not json.loads(row["anomalies_json"] or "[]")
+        for row in documents
+    )
+    if not documents:
+        level = "aucune_piece"
+    elif with_anomalies:
+        level = "a_verifier"
+    elif external_proof == len(documents):
+        level = "preuve_externe_recue"
+    else:
+        level = "coherent_techniquement_non_authentifie"
+    return ApplicationVerificationSummary(
+        candidature_id=application_id,
+        pieces_total=len(documents),
+        pieces_techniquement_coherentes=technical_ok,
+        pieces_avec_anomalie=with_anomalies,
+        pieces_avec_preuve_externe=external_proof,
+        pieces_a_verifier=max(0, len(documents) - technical_ok),
+        demandes_externes_en_attente=int(pending),
+        niveau_global=level,
+        limites=[
+            "Un contrôle de format, de signature de fichier ou de cohérence ne prouve pas qu'une pièce est authentique.",
+            "Une preuve officielle nécessite le consentement du candidat et un connecteur réellement configuré.",
+            "La décision finale sur la candidature reste celle du propriétaire.",
+        ],
+    )
+
+
 @app.post(
     "/api/biens/{property_id}/candidatures/{application_id}/pieces",
     response_model=ApplicationDocument,
@@ -12642,3 +12847,116 @@ def get_recherches(candidate: Candidate = Depends(current_candidate)) -> list[Se
 def get_applications(candidate: Candidate = Depends(current_candidate)) -> list[Application]:
     values = list(applications.values())
     return [item for item in values if item.candidate_id == candidate.email]
+
+
+def _agent_runtime_status() -> AgentRuntimeStatus:
+    configured = bool(AI_PROVIDER and AI_PROVIDER != "non_configure" and AI_API_KEY)
+    return AgentRuntimeStatus(
+        fournisseur=AI_PROVIDER or "non_configure",
+        modele=AI_MODEL or "non_configure",
+        configure=configured,
+        execution_reelle_active=False,
+        limite_quotidienne=AI_MAX_REQUESTS_PER_DAY,
+        secret_present=bool(AI_API_KEY),
+        message=(
+            "Le moteur de missions est prêt, mais aucun appel de modèle n'est activé dans ce déploiement."
+            if not configured
+            else "Les identifiants sont présents ; le connecteur de modèle doit encore être activé explicitement."
+        ),
+    )
+
+
+@app.get("/api/parametres/agents/runtime", response_model=AgentRuntimeStatus)
+def get_agent_runtime_status(owner: Candidate = Depends(current_candidate)) -> AgentRuntimeStatus:
+    """Show provider readiness without returning the provider secret."""
+
+    _workspace_for_owner(owner)
+    return _agent_runtime_status()
+
+
+@app.get("/api/parametres/production", response_model=ProductionReadiness)
+def get_production_readiness(owner: Candidate = Depends(current_candidate)) -> ProductionReadiness:
+    """Return the deployment checklist used by the owner dashboard."""
+
+    _workspace_for_owner(owner)
+    UPLOAD_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    storage_ok = os.access(UPLOAD_DIRECTORY, os.W_OK)
+    backup_ok = BACKUP_DIRECTORY.exists() and os.access(BACKUP_DIRECTORY, os.W_OK)
+    warnings: list[str] = []
+    if not backup_ok:
+        warnings.append("Le répertoire de sauvegarde n'est pas encore initialisé.")
+    if not DOSSIER_FACILE_ENABLED:
+        warnings.append("DossierFacile reste en mode contrat : aucun accès fournisseur n'est activé.")
+    if not AI_API_KEY:
+        warnings.append("Aucun secret fournisseur IA n'est configuré ; les missions restent déterministes.")
+    if FRONTEND_REDIRECT_URI.startswith("http://") and not FRONTEND_REDIRECT_URI.startswith("http://127.0.0.1"):
+        warnings.append("Le frontend utilise encore HTTP : passer à HTTPS avant une mise en production publique.")
+    return ProductionReadiness(
+        database="ok",
+        stockage_prive="ok" if storage_ok else "a_corriger",
+        sauvegarde="pretee" if backup_ok else "a_initialiser",
+        authentification="sessions serveur actives",
+        dossier_facile="configure" if _dossier_facile_is_configured() else "contrat_non_configure",
+        canaux={
+            "whatsapp": "configure" if WHATSAPP_API_TOKEN else "contrat_non_configure",
+            "telegram": "configure" if TELEGRAM_BOT_TOKEN else "contrat_non_configure",
+        },
+        fournisseur_ia=_agent_runtime_status(),
+        avertissements=warnings,
+    )
+
+
+@app.post("/api/internal/agent-runs/{run_id}/retry", response_model=AgentRun)
+def retry_agent_run(run_id: str, request: Request) -> AgentRun:
+    """Put one failed mission back in the queue within its retry budget."""
+
+    _agent_internal_auth(request)
+    with closing(_connect()) as connection:
+        row = connection.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Mission d'agent introuvable.")
+        if row["status"] != "failed":
+            raise HTTPException(status_code=409, detail="Seule une mission en échec peut être relancée.")
+        if int(row["attempts"] or 0) >= int(row["max_attempts"] or 3):
+            raise HTTPException(status_code=409, detail="La mission a atteint son nombre maximal de tentatives.")
+        now = _iso_now()
+        connection.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'queued', error = '', next_retry_at = ?, finished_at = NULL, updated_at = ?
+            WHERE id = ? AND status = 'failed'
+            """,
+            (now, now, run_id),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=row["workspace_id"],
+            actor_type="system",
+            actor_id="agent-runtime",
+            event_name="mission_agent_remise_en_file",
+            entity_type="agent_run",
+            entity_id=run_id,
+            metadata={"tentative": int(row["attempts"] or 0) + 1, "maximum": int(row["max_attempts"] or 3)},
+        )
+        connection.commit()
+        updated = connection.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
+    return _agent_run_from_row(updated)
+
+
+@app.post("/api/internal/maintenance/backup")
+def create_database_backup(request: Request) -> dict[str, object]:
+    """Create a consistent SQLite backup for a scheduled VPS job."""
+
+    _agent_internal_auth(request)
+    BACKUP_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    backup_name = f"piaule-fiction-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.sqlite3"
+    backup_path = BACKUP_DIRECTORY / backup_name
+    with closing(sqlite3.connect(DATABASE_PATH)) as source, closing(sqlite3.connect(backup_path)) as target:
+        source.backup(target)
+    return {
+        "ok": True,
+        "fichier": backup_name,
+        "taille_octets": backup_path.stat().st_size,
+        "stockage": "local_vps",
+        "prochaine_etape": "copier périodiquement ce fichier vers un stockage séparé et chiffré",
+    }
