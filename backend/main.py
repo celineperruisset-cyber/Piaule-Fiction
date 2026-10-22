@@ -159,6 +159,24 @@ class DashboardAgentActivity(BaseModel):
     date: str
 
 
+class DashboardMessageSummary(BaseModel):
+    conversations: int
+    messages_non_lus: int
+    pieces_a_recuperer: int
+    reponses_a_valider: int
+
+
+class DashboardConversationPreview(BaseModel):
+    id: str
+    candidature_id: str
+    candidat: str
+    bien: str
+    canal: ConversationChannel
+    messages_non_lus: int
+    dernier_message: str
+    dernier_message_le: str | None = None
+
+
 class DashboardSummary(BaseModel):
     biens: DashboardPropertySummary
     candidatures: DashboardApplicationSummary
@@ -168,6 +186,8 @@ class DashboardSummary(BaseModel):
     etats_des_lieux_en_cours: int
     actions_en_attente: int
     activite_agents: list[DashboardAgentActivity]
+    messages: DashboardMessageSummary
+    conversations_recentes: list[DashboardConversationPreview]
     mis_a_jour_le: str
 
 
@@ -1399,6 +1419,8 @@ class Conversation(BaseModel):
     sujet: str
     dernier_message_le: str | None = None
     messages_non_lus: int = 0
+    candidat: str = ""
+    bien: str = ""
     created_at: str
     updated_at: str
 
@@ -4485,6 +4507,14 @@ def _conversation_from_row(row: sqlite3.Row, connection: sqlite3.Connection) -> 
         sujet=row["subject"],
         dernier_message_le=row["last_message_at"],
         messages_non_lus=int(unread),
+        candidat=(
+            " ".join(
+                part for part in (row["candidate_first_name"], row["candidate_last_name"]) if part
+            )
+            if "candidate_first_name" in row.keys()
+            else ""
+        ),
+        bien=row["property_name"] if "property_name" in row.keys() else "",
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -7565,6 +7595,55 @@ def get_dashboard_summary(owner: Candidate = Depends(current_candidate)) -> Dash
             (owner.workspace_id,),
         ).fetchone()["count"]
 
+        conversation_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM conversations WHERE workspace_id = ?",
+            (owner.workspace_id,),
+        ).fetchone()["count"]
+        unread_message_count = connection.execute(
+            """
+            SELECT COUNT(*) AS count FROM candidate_messages
+            WHERE workspace_id = ? AND direction = 'entrant' AND read_at IS NULL
+            """,
+            (owner.workspace_id,),
+        ).fetchone()["count"]
+        pending_attachment_count = connection.execute(
+            """
+            SELECT COUNT(*) AS count FROM channel_message_attachments
+            WHERE workspace_id = ? AND status = 'a_recuperer'
+            """,
+            (owner.workspace_id,),
+        ).fetchone()["count"]
+        pending_reply_count = connection.execute(
+            """
+            SELECT COUNT(*) AS count FROM candidate_messages
+            WHERE workspace_id = ? AND direction = 'sortant' AND statut = 'a_valider'
+            """,
+            (owner.workspace_id,),
+        ).fetchone()["count"]
+        recent_conversations = connection.execute(
+            """
+            SELECT c.*, a.candidat_prenom AS candidate_first_name,
+                   a.candidat_nom AS candidate_last_name, p.nom AS property_name,
+                   COALESCE((
+                       SELECT COUNT(*) FROM candidate_messages unread
+                       WHERE unread.conversation_id = c.id
+                         AND unread.direction = 'entrant' AND unread.read_at IS NULL
+                   ), 0) AS unread_count,
+                   COALESCE((
+                       SELECT contenu FROM candidate_messages latest
+                       WHERE latest.conversation_id = c.id
+                       ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+                   ), '') AS latest_content
+            FROM conversations c
+            JOIN owner_applications a ON a.id = c.application_id
+            JOIN properties p ON p.id = c.property_id
+            WHERE c.workspace_id = ?
+            ORDER BY COALESCE(c.last_message_at, c.updated_at) DESC, c.id DESC
+            LIMIT 5
+            """,
+            (owner.workspace_id,),
+        ).fetchall()
+
         activity_rows = connection.execute(
             """
             SELECT ar.id, ar.agent_type, ar.mission, ar.status, ar.target_type,
@@ -7608,6 +7687,27 @@ def get_dashboard_summary(owner: Candidate = Depends(current_candidate)) -> Dash
                 date=row["created_at"],
             )
             for row in activity_rows
+        ],
+        messages=DashboardMessageSummary(
+            conversations=int(conversation_count),
+            messages_non_lus=int(unread_message_count),
+            pieces_a_recuperer=int(pending_attachment_count),
+            reponses_a_valider=int(pending_reply_count),
+        ),
+        conversations_recentes=[
+            DashboardConversationPreview(
+                id=row["id"],
+                candidature_id=row["application_id"],
+                candidat=" ".join(
+                    part for part in (row["candidate_first_name"], row["candidate_last_name"]) if part
+                ),
+                bien=row["property_name"],
+                canal=row["channel"],
+                messages_non_lus=int(row["unread_count"]),
+                dernier_message=row["latest_content"],
+                dernier_message_le=row["last_message_at"],
+            )
+            for row in recent_conversations
         ],
         mis_a_jour_le=now,
     )
@@ -10635,8 +10735,11 @@ def list_owner_conversations(
     with closing(_connect()) as connection:
         rows = connection.execute(
             f"""
-            SELECT c.*
+            SELECT c.*, a.candidat_prenom AS candidate_first_name,
+                   a.candidat_nom AS candidate_last_name, p.nom AS property_name
             FROM conversations c
+            JOIN owner_applications a ON a.id = c.application_id
+            JOIN properties p ON p.id = c.property_id
             WHERE {' AND '.join(clauses)}
             ORDER BY COALESCE(c.last_message_at, c.updated_at) DESC, c.id DESC
             LIMIT ?
@@ -10655,7 +10758,14 @@ def get_owner_conversation(
 
     with closing(_connect()) as connection:
         conversation = connection.execute(
-            "SELECT * FROM conversations WHERE id = ? AND workspace_id = ?",
+            """
+            SELECT c.*, a.candidat_prenom AS candidate_first_name,
+                   a.candidat_nom AS candidate_last_name, p.nom AS property_name
+            FROM conversations c
+            JOIN owner_applications a ON a.id = c.application_id
+            JOIN properties p ON p.id = c.property_id
+            WHERE c.id = ? AND c.workspace_id = ?
+            """,
             (conversation_id, owner.workspace_id),
         ).fetchone()
         if conversation is None:
@@ -10709,7 +10819,14 @@ def mark_owner_conversation_read(
         )
         connection.commit()
         conversation = connection.execute(
-            "SELECT * FROM conversations WHERE id = ? AND workspace_id = ?",
+            """
+            SELECT c.*, a.candidat_prenom AS candidate_first_name,
+                   a.candidat_nom AS candidate_last_name, p.nom AS property_name
+            FROM conversations c
+            JOIN owner_applications a ON a.id = c.application_id
+            JOIN properties p ON p.id = c.property_id
+            WHERE c.id = ? AND c.workspace_id = ?
+            """,
             (conversation_id, owner.workspace_id),
         ).fetchone()
         return _conversation_from_row(conversation, connection)

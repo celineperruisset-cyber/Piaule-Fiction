@@ -2507,3 +2507,14 @@ def test_external_channel_message_is_threaded_idempotently_and_stores_attachment
         detail = owner.get(f"/api/messages/conversations/{conversation_id}")
         assert detail.status_code == 200
         assert len(detail.json()["pieces_jointes"]) == 1
+        assert detail.json()["conversation"]["candidat"] == "Alex Canal"
+        assert detail.json()["conversation"]["bien"] == "Bien canal"
+        inbox = owner.get("/api/messages/conversations")
+        assert inbox.status_code == 200
+        assert inbox.json()[0]["candidat"] == "Alex Canal"
+        dashboard = owner.get("/api/dashboard")
+        assert dashboard.status_code == 200
+        assert dashboard.json()["messages"]["conversations"] == 1
+        assert dashboard.json()["messages"]["messages_non_lus"] == 1
+        assert dashboard.json()["messages"]["pieces_a_recuperer"] == 0
+        assert dashboard.json()["conversations_recentes"][0]["canal"] == "whatsapp"
