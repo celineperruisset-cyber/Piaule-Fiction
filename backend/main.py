@@ -68,6 +68,10 @@ DOSSIER_FACILE_WEBHOOK_TOKEN = os.getenv("PIAULE_DOSSIER_FACILE_WEBHOOK_TOKEN", 
 DOSSIER_FACILE_STATE_SECONDS = 600
 VERIFICATION_INTERNAL_TOKEN = os.getenv("PIAULE_VERIFICATION_INTERNAL_TOKEN", "").strip()
 AGENT_INTERNAL_TOKEN = os.getenv("PIAULE_AGENT_INTERNAL_TOKEN", "").strip()
+CHANNEL_WEBHOOK_TOKEN = os.getenv("PIAULE_CHANNEL_WEBHOOK_TOKEN", "").strip()
+WHATSAPP_CHANNEL_TOKEN = os.getenv("PIAULE_WHATSAPP_WEBHOOK_TOKEN", "").strip()
+TELEGRAM_CHANNEL_TOKEN = os.getenv("PIAULE_TELEGRAM_WEBHOOK_TOKEN", "").strip()
+CHANNEL_INTERNAL_TOKEN = os.getenv("PIAULE_CHANNEL_INTERNAL_TOKEN", "").strip()
 CANDIDATE_PORTAL_BASE_URL = os.getenv(
     "PIAULE_CANDIDATE_PORTAL_BASE_URL",
     "http://127.0.0.1:5173/candidature.html",
@@ -1165,6 +1169,8 @@ ApplicationDocumentProvenance = Literal[
     "email",
     "dossier_facile",
     "portail_candidat",
+    "whatsapp",
+    "telegram",
     "import",
     "autre",
 ]
@@ -1298,6 +1304,60 @@ class CandidateChannelSelection(BaseModel):
     updated_at: str
 
 
+class CandidateChannelLinkRequest(BaseModel):
+    external_contact_id: str = Field(min_length=1, max_length=300)
+    external_thread_id: str = Field(default="", max_length=300)
+
+
+class CandidateChannelEndpoint(BaseModel):
+    id: str
+    candidature_id: str
+    canal: ConversationChannel
+    identifiant_contact_externe: str
+    identifiant_fil_externe: str = ""
+    statut: Literal["actif", "revoque"]
+    created_at: str
+    updated_at: str
+
+
+class ChannelWebhookAttachment(BaseModel):
+    identifiant_media_externe: str = Field(min_length=1, max_length=300)
+    nom: str = Field(default="piece-jointe", max_length=180)
+    type_contenu: str = Field(default="application/octet-stream", max_length=120)
+    taille_octets: int = Field(default=0, ge=0, le=MAX_DOCUMENT_BYTES)
+
+
+class ChannelWebhookMessage(BaseModel):
+    endpoint_id: str = Field(min_length=1, max_length=120)
+    message_externe_id: str = Field(min_length=1, max_length=500)
+    fil_externe_id: str = Field(default="", max_length=300)
+    contenu: str = Field(default="", max_length=100_000)
+    pieces_jointes: list[ChannelWebhookAttachment] = Field(default_factory=list, max_length=20)
+
+
+class ChannelAttachment(BaseModel):
+    id: str
+    message_id: str
+    candidature_id: str
+    canal: ConversationChannel
+    identifiant_media_externe: str
+    nom: str
+    type_contenu: str
+    taille_octets: int
+    statut: Literal["a_recuperer", "stockee", "erreur"]
+    piece_id: str | None = None
+    created_at: str
+
+
+class ChannelAttachmentStoreRequest(BaseModel):
+    contenu_base64: str = Field(min_length=1)
+
+
+class ChannelWebhookIngestResult(BaseModel):
+    message: CandidateMessage
+    pieces_jointes: list[ChannelAttachment] = Field(default_factory=list)
+
+
 class CandidateMessageCreate(BaseModel):
     contenu: str = Field(min_length=1, max_length=5000)
     sujet: str = Field(default="", max_length=160)
@@ -1319,7 +1379,7 @@ class CandidateMessage(BaseModel):
     direction: Literal["entrant", "sortant"]
     sujet: str
     contenu: str
-    source: Literal["email", "portail_candidat", "agent", "proprietaire"]
+    source: Literal["email", "portail_candidat", "whatsapp", "telegram", "agent", "proprietaire"]
     statut: Literal["recu", "a_valider", "a_envoyer", "en_cours", "envoye", "erreur", "bloque"]
     conversation_id: str | None = None
     canal: ConversationChannel = "email"
@@ -1346,6 +1406,7 @@ class Conversation(BaseModel):
 class ConversationDetail(BaseModel):
     conversation: Conversation
     messages: list[CandidateMessage]
+    pieces_jointes: list[ChannelAttachment] = Field(default_factory=list)
 
 
 class ConversationMessageCreate(BaseModel):
@@ -1962,6 +2023,45 @@ def _ensure_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS candidate_channel_preferences_workspace_idx
                 ON candidate_channel_preferences(workspace_id, updated_at);
+            CREATE TABLE IF NOT EXISTS candidate_channel_endpoints (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                external_contact_id TEXT NOT NULL,
+                external_thread_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'actif',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(workspace_id, channel, external_contact_id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS candidate_channel_endpoints_application_idx
+                ON candidate_channel_endpoints(workspace_id, application_id, channel);
+            CREATE TABLE IF NOT EXISTS channel_message_attachments (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                external_media_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'a_recuperer',
+                application_document_id TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(workspace_id, channel, external_media_id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(message_id) REFERENCES candidate_messages(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_document_id) REFERENCES application_documents(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS channel_message_attachments_message_idx
+                ON channel_message_attachments(workspace_id, message_id, created_at);
+            CREATE INDEX IF NOT EXISTS channel_message_attachments_application_idx
+                ON channel_message_attachments(workspace_id, application_id, status);
             CREATE TABLE IF NOT EXISTS workspace_automation_policies (
                 workspace_id TEXT PRIMARY KEY,
                 completeness_mode TEXT NOT NULL DEFAULT 'automatique',
@@ -2601,6 +2701,34 @@ def _agent_internal_auth(request: Request) -> None:
     received_token = request.headers.get("x-piaule-agent-token", "")
     if not hmac.compare_digest(received_token, AGENT_INTERNAL_TOKEN):
         raise HTTPException(status_code=401, detail="Jeton interne des agents invalide.")
+
+
+def _channel_webhook_auth(request: Request, channel: str) -> None:
+    """Authenticate the normalized callback from one messaging provider."""
+
+    provider_token = {
+        "whatsapp": WHATSAPP_CHANNEL_TOKEN,
+        "telegram": TELEGRAM_CHANNEL_TOKEN,
+    }.get(channel, "")
+    expected_token = provider_token or CHANNEL_WEBHOOK_TOKEN
+    received_token = request.headers.get("x-piaule-channel-token", "")
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="Le connecteur de messagerie n'est pas configuré.")
+    if not hmac.compare_digest(received_token, expected_token):
+        raise HTTPException(status_code=401, detail="Jeton du connecteur de messagerie invalide.")
+
+
+def _channel_internal_auth(request: Request) -> None:
+    """Authenticate the private media adapter that downloads provider files."""
+
+    expected_token = CHANNEL_INTERNAL_TOKEN or AGENT_INTERNAL_TOKEN
+    received_token = request.headers.get("x-piaule-channel-token", "") or request.headers.get(
+        "x-piaule-agent-token", ""
+    )
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="Le stockage interne des pièces n'est pas configuré.")
+    if not hmac.compare_digest(received_token, expected_token):
+        raise HTTPException(status_code=401, detail="Jeton de stockage de pièce invalide.")
 
 
 def _agent_run_from_row(row: sqlite3.Row) -> AgentRun:
@@ -4502,6 +4630,35 @@ def _candidate_message_from_row(row: sqlite3.Row) -> CandidateMessage:
         message_externe_id=row["external_message_id"],
         repond_a=row["in_reply_to"],
         lu_le=row["read_at"],
+        created_at=row["created_at"],
+    )
+
+
+def _channel_endpoint_from_row(row: sqlite3.Row) -> CandidateChannelEndpoint:
+    return CandidateChannelEndpoint(
+        id=row["id"],
+        candidature_id=row["application_id"],
+        canal=row["channel"],
+        identifiant_contact_externe=row["external_contact_id"],
+        identifiant_fil_externe=row["external_thread_id"],
+        statut=row["status"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _channel_attachment_from_row(row: sqlite3.Row) -> ChannelAttachment:
+    return ChannelAttachment(
+        id=row["id"],
+        message_id=row["message_id"],
+        candidature_id=row["application_id"],
+        canal=row["channel"],
+        identifiant_media_externe=row["external_media_id"],
+        nom=row["filename"],
+        type_contenu=row["content_type"],
+        taille_octets=int(row["size_bytes"]),
+        statut=row["status"],
+        piece_id=row["application_document_id"] or None,
         created_at=row["created_at"],
     )
 
@@ -9864,6 +10021,310 @@ def candidate_portal_choose_channel(
     )
 
 
+@app.post(
+    "/api/candidature-acces/{token}/canal/{canal}/lier",
+    response_model=CandidateChannelEndpoint,
+    status_code=201,
+)
+def candidate_portal_link_external_channel(
+    token: str,
+    canal: Literal["whatsapp", "telegram"],
+    payload: CandidateChannelLinkRequest,
+) -> CandidateChannelEndpoint:
+    """Bind a provider contact/thread to this temporary candidate link."""
+
+    access = _active_candidate_access_row(token)
+    contact_id = _clean_text(payload.external_contact_id, 300)
+    thread_id = _clean_text(payload.external_thread_id, 300)
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        conflict = connection.execute(
+            """
+            SELECT * FROM candidate_channel_endpoints
+            WHERE workspace_id = ? AND channel = ? AND external_contact_id = ?
+            """,
+            (access["workspace_id"], canal, contact_id),
+        ).fetchone()
+        if conflict is not None and conflict["application_id"] != access["application_id"]:
+            raise HTTPException(status_code=409, detail="Ce contact est déjà rattaché à une autre candidature.")
+        endpoint_id = conflict["id"] if conflict is not None else f"channel-endpoint-{uuid4().hex[:16]}"
+        connection.execute(
+            """
+            INSERT INTO candidate_channel_endpoints(
+                id, workspace_id, application_id, channel, external_contact_id,
+                external_thread_id, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'actif', ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                external_thread_id = excluded.external_thread_id,
+                status = 'actif',
+                updated_at = excluded.updated_at
+            """,
+            (endpoint_id, access["workspace_id"], access["application_id"], canal, contact_id, thread_id, now, now),
+        )
+        conversation = _get_or_create_conversation(
+            connection,
+            workspace_id=access["workspace_id"],
+            property_id=access["property_id"],
+            application_id=access["application_id"],
+            channel=canal,
+            subject="Conversation candidat",
+        )
+        preference = connection.execute(
+            "SELECT id FROM candidate_channel_preferences WHERE application_id = ?",
+            (access["application_id"],),
+        ).fetchone()
+        preference_id = preference["id"] if preference else f"channel-preference-{uuid4().hex[:16]}"
+        connection.execute(
+            """
+            INSERT INTO candidate_channel_preferences(
+                id, workspace_id, application_id, channel, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'actif', ?, ?)
+            ON CONFLICT(application_id) DO UPDATE SET
+                channel = excluded.channel, status = 'actif', updated_at = excluded.updated_at
+            """,
+            (preference_id, access["workspace_id"], access["application_id"], canal, now, now),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=access["workspace_id"],
+            actor_type="candidat",
+            actor_id=access["application_id"],
+            event_name="canal_externe_lie",
+            entity_type="candidate_channel_endpoint",
+            entity_id=endpoint_id,
+            property_id=access["property_id"],
+            application_id=access["application_id"],
+            metadata={"canal": canal},
+        )
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM candidate_channel_endpoints WHERE id = ?", (endpoint_id,)
+        ).fetchone()
+    return _channel_endpoint_from_row(row)
+
+
+@app.post(
+    "/api/internal/canaux/{canal}/messages",
+    response_model=ChannelWebhookIngestResult,
+    status_code=201,
+)
+def ingest_channel_message(
+    canal: Literal["whatsapp", "telegram"],
+    payload: ChannelWebhookMessage,
+    request: Request,
+) -> ChannelWebhookIngestResult:
+    """Ingest one provider message after its adapter normalized the payload."""
+
+    _channel_webhook_auth(request, canal)
+    with closing(_connect()) as connection:
+        endpoint = connection.execute(
+            """
+            SELECT * FROM candidate_channel_endpoints
+            WHERE id = ? AND channel = ? AND status = 'actif'
+            """,
+            (payload.endpoint_id, canal),
+        ).fetchone()
+        if endpoint is None:
+            raise HTTPException(status_code=404, detail="Liaison de canal introuvable ou révoquée.")
+        external_id = _clean_text(payload.message_externe_id, 500)
+        existing = connection.execute(
+            """
+            SELECT * FROM candidate_messages
+            WHERE workspace_id = ? AND channel = ? AND external_message_id = ?
+            LIMIT 1
+            """,
+            (endpoint["workspace_id"], canal, external_id),
+        ).fetchone()
+        if existing is not None:
+            attachments = connection.execute(
+                "SELECT * FROM channel_message_attachments WHERE message_id = ? ORDER BY created_at, id",
+                (existing["id"],),
+            ).fetchall()
+            return ChannelWebhookIngestResult(
+                message=_candidate_message_from_row(existing),
+                pieces_jointes=[_channel_attachment_from_row(row) for row in attachments],
+            )
+        application = connection.execute(
+            "SELECT property_id FROM owner_applications WHERE id = ? AND workspace_id = ?",
+            (endpoint["application_id"], endpoint["workspace_id"]),
+        ).fetchone()
+        if application is None:
+            raise HTTPException(status_code=404, detail="Candidature de la liaison introuvable.")
+        conversation = _get_or_create_conversation(
+            connection,
+            workspace_id=endpoint["workspace_id"],
+            property_id=application["property_id"],
+            application_id=endpoint["application_id"],
+            channel=canal,
+            subject="Conversation candidat",
+        )
+        message_id = f"message-candidat-{uuid4().hex[:16]}"
+        thread_id = _clean_text(payload.fil_externe_id, 300) or endpoint["external_thread_id"]
+        connection.execute(
+            """
+            INSERT INTO candidate_messages(
+                id, workspace_id, application_id, property_id, conversation_id,
+                direction, sujet, contenu, source, statut, channel,
+                external_message_id, in_reply_to, from_address, to_address, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'entrant', '', ?, ?, 'recu', ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                message_id, endpoint["workspace_id"], endpoint["application_id"], application["property_id"],
+                conversation["id"], _clean_text(payload.contenu, 100_000), canal, canal,
+                external_id, thread_id, endpoint["external_contact_id"], "piaule",
+            ),
+        )
+        _touch_conversation(connection, conversation["id"])
+        for attachment in payload.pieces_jointes:
+            connection.execute(
+                """
+                INSERT INTO channel_message_attachments(
+                    id, workspace_id, message_id, application_id, channel,
+                    external_media_id, filename, content_type, size_bytes, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'a_recuperer', datetime('now'))
+                """,
+                (
+                    f"channel-attachment-{uuid4().hex[:16]}", endpoint["workspace_id"], message_id,
+                    endpoint["application_id"], canal, _clean_text(attachment.identifiant_media_externe, 300),
+                    _clean_text(attachment.nom, 180), _clean_text(attachment.type_contenu, 120),
+                    attachment.taille_octets,
+                ),
+            )
+        if payload.pieces_jointes:
+            for agent_type, mission in (
+                ("agent-completude", "Recalculer la complétude après réception d'une pièce via un canal externe."),
+                ("agent-confiance", "Analyser les pièces reçues via un canal externe."),
+            ):
+                _queue_specialized_agent_run(
+                    connection,
+                    workspace_id=endpoint["workspace_id"],
+                    agent_type=agent_type,
+                    mission=mission,
+                    application_id=endpoint["application_id"],
+                    property_id=application["property_id"],
+                    trigger=f"piece_recue_{canal}",
+                )
+        _record_audit_event(
+            connection,
+            workspace_id=endpoint["workspace_id"], actor_type="connecteur", actor_id=canal,
+            event_name="message_canal_externe_recu", entity_type="candidate_message", entity_id=message_id,
+            property_id=application["property_id"], application_id=endpoint["application_id"],
+            metadata={"pieces_jointes": len(payload.pieces_jointes)},
+        )
+        connection.commit()
+        message_row = connection.execute("SELECT * FROM candidate_messages WHERE id = ?", (message_id,)).fetchone()
+        attachment_rows = connection.execute(
+            "SELECT * FROM channel_message_attachments WHERE message_id = ? ORDER BY created_at, id",
+            (message_id,),
+        ).fetchall()
+    return ChannelWebhookIngestResult(
+        message=_candidate_message_from_row(message_row),
+        pieces_jointes=[_channel_attachment_from_row(row) for row in attachment_rows],
+    )
+
+
+@app.post(
+    "/api/internal/canaux/pieces/{attachment_id}/stocker",
+    response_model=ChannelAttachment,
+)
+def store_channel_attachment(
+    attachment_id: str,
+    payload: ChannelAttachmentStoreRequest,
+    request: Request,
+) -> ChannelAttachment:
+    """Persist one media file downloaded by a WhatsApp/Telegram adapter."""
+
+    _channel_internal_auth(request)
+    encoded = payload.contenu_base64.strip()
+    if len(encoded) > MAX_DOCUMENT_BYTES * 2:
+        raise HTTPException(status_code=413, detail="La pièce dépasse 100 Mo.")
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail="Le contenu base64 de la pièce est invalide.") from exc
+    if not content or len(content) > MAX_DOCUMENT_BYTES:
+        raise HTTPException(status_code=413, detail="La pièce doit faire entre 1 octet et 100 Mo.")
+
+    with closing(_connect()) as connection:
+        attachment = connection.execute(
+            "SELECT * FROM channel_message_attachments WHERE id = ?", (attachment_id,)
+        ).fetchone()
+        if attachment is None:
+            raise HTTPException(status_code=404, detail="Pièce de canal introuvable.")
+        if attachment["status"] == "stockee" and attachment["application_document_id"]:
+            return _channel_attachment_from_row(attachment)
+        extension = _document_extension(attachment["filename"], attachment["content_type"])
+        if extension is None:
+            connection.execute(
+                "UPDATE channel_message_attachments SET status = 'erreur' WHERE id = ?",
+                (attachment_id,),
+            )
+            connection.commit()
+            raise HTTPException(status_code=415, detail="Format accepté : PDF, JPG ou PNG.")
+        application = connection.execute(
+            "SELECT property_id FROM owner_applications WHERE id = ? AND workspace_id = ?",
+            (attachment["application_id"], attachment["workspace_id"]),
+        ).fetchone()
+        if application is None:
+            raise HTTPException(status_code=404, detail="Candidature de la pièce introuvable.")
+        document_id = f"application-doc-{uuid4().hex}"
+        stored_filename = f"{document_id}.{extension}"
+        digest = hashlib.sha256(content).hexdigest()
+        UPLOAD_DIRECTORY.mkdir(parents=True, exist_ok=True)
+        stored_path = UPLOAD_DIRECTORY / stored_filename
+        stored_path.write_bytes(content)
+        try:
+            connection.execute(
+                """
+                INSERT INTO application_documents(
+                    id, workspace_id, application_id, property_id, document_type,
+                    nom, original_filename, stored_filename, content_type, size_bytes,
+                    sha256, provenance, statut, date_expiration, note_verification,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'autre', ?, ?, ?, ?, ?, ?, ?, 'recu', NULL, '', datetime('now'), datetime('now'))
+                """,
+                (
+                    document_id, attachment["workspace_id"], attachment["application_id"], application["property_id"],
+                    attachment["filename"], attachment["filename"], stored_filename, attachment["content_type"],
+                    len(content), digest, attachment["channel"],
+                ),
+            )
+            inserted = connection.execute(
+                "SELECT * FROM application_documents WHERE id = ?", (document_id,)
+            ).fetchone()
+            _document_preflight(connection, inserted)
+            connection.execute(
+                """
+                UPDATE channel_message_attachments
+                SET status = 'stockee', application_document_id = ?
+                WHERE id = ?
+                """,
+                (document_id, attachment_id),
+            )
+            _refresh_application_status(connection, attachment["workspace_id"], attachment["application_id"])
+            for agent_type, mission in (
+                ("agent-completude", "Recalculer la complétude après stockage d'une pièce reçue par canal externe."),
+                ("agent-confiance", "Analyser la fiabilité d'une pièce reçue par canal externe."),
+            ):
+                _queue_specialized_agent_run(
+                    connection,
+                    workspace_id=attachment["workspace_id"],
+                    agent_type=agent_type,
+                    mission=mission,
+                    application_id=attachment["application_id"],
+                    property_id=application["property_id"],
+                    trigger=f"piece_stockee_{attachment['channel']}",
+                )
+            connection.commit()
+            updated = connection.execute(
+                "SELECT * FROM channel_message_attachments WHERE id = ?", (attachment_id,)
+            ).fetchone()
+        except Exception:
+            stored_path.unlink(missing_ok=True)
+            raise
+    return _channel_attachment_from_row(updated)
+
+
 @app.get("/api/candidature-acces/{token}/visites", response_model=list[CandidateVisit])
 def candidate_portal_visits(token: str) -> list[CandidateVisit]:
     """Show only the candidate's own proposed or confirmed visits."""
@@ -10207,9 +10668,20 @@ def get_owner_conversation(
             """,
             (conversation_id, owner.workspace_id),
         ).fetchall()
+        attachments = connection.execute(
+            """
+            SELECT * FROM channel_message_attachments
+            WHERE workspace_id = ? AND message_id IN (
+                SELECT id FROM candidate_messages WHERE conversation_id = ?
+            )
+            ORDER BY created_at, id
+            """,
+            (owner.workspace_id, conversation_id),
+        ).fetchall()
         return ConversationDetail(
             conversation=_conversation_from_row(conversation, connection),
             messages=[_candidate_message_from_row(row) for row in messages],
+            pieces_jointes=[_channel_attachment_from_row(row) for row in attachments],
         )
 
 

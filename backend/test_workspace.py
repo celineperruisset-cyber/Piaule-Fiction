@@ -1,5 +1,6 @@
 import tempfile
 import os
+import base64
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -2395,3 +2396,114 @@ def test_application_search_supports_filters_pagination_and_workspace_isolation(
         assert other_page.status_code == 200
         assert other_page.json()["total"] == 0
         assert other_page.json()["items"] == []
+
+
+def test_external_channel_message_is_threaded_idempotently_and_stores_attachment():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.WHATSAPP_CHANNEL_TOKEN = "whatsapp-test-token"
+        main.CHANNEL_INTERNAL_TOKEN = "channel-internal-test-token"
+        owner = TestClient(main.app)
+
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "channel-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert created.status_code == 200
+        property_id = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien canal",
+                "type": "appartement",
+                "adresse_ligne1": "10 rue du Canal",
+                "ville": "Lyon",
+            },
+        ).json()["id"]
+        application_id = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Canal",
+                "candidat_email": "alex-canal@example.test",
+            },
+        ).json()["id"]
+        access = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/lien-candidat"
+        )
+        assert access.status_code == 200
+        token = access.json()["url"].split("?access=", 1)[1]
+        assert owner.post(
+            f"/api/candidature-acces/{token}/canal",
+            json={"canal": "whatsapp"},
+        ).status_code == 200
+
+        linked = owner.post(
+            f"/api/candidature-acces/{token}/canal/whatsapp/lier",
+            json={"external_contact_id": "whatsapp-user-42", "external_thread_id": "thread-42"},
+        )
+        assert linked.status_code == 201
+        endpoint_id = linked.json()["id"]
+        assert linked.json()["statut"] == "actif"
+
+        webhook_payload = {
+            "endpoint_id": endpoint_id,
+            "message_externe_id": "wamid-001",
+            "fil_externe_id": "thread-42",
+            "contenu": "Bonjour, voici mon dossier.",
+            "pieces_jointes": [
+                {
+                    "identifiant_media_externe": "media-001",
+                    "nom": "avis-imposition.pdf",
+                    "type_contenu": "application/pdf",
+                    "taille_octets": 12,
+                }
+            ],
+        }
+        received = owner.post(
+            "/api/internal/canaux/whatsapp/messages",
+            headers={"x-piaule-channel-token": "whatsapp-test-token"},
+            json=webhook_payload,
+        )
+        assert received.status_code == 201
+        assert received.json()["message"]["source"] == "whatsapp"
+        assert received.json()["message"]["canal"] == "whatsapp"
+        assert received.json()["pieces_jointes"][0]["statut"] == "a_recuperer"
+        attachment_id = received.json()["pieces_jointes"][0]["id"]
+
+        duplicate = owner.post(
+            "/api/internal/canaux/whatsapp/messages",
+            headers={"x-piaule-channel-token": "whatsapp-test-token"},
+            json=webhook_payload,
+        )
+        assert duplicate.status_code == 201
+        assert duplicate.json()["message"]["id"] == received.json()["message"]["id"]
+        with main._connect() as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) AS count FROM candidate_messages WHERE external_message_id = 'wamid-001'"
+            ).fetchone()["count"] == 1
+
+        stored = owner.post(
+            f"/api/internal/canaux/pieces/{attachment_id}/stocker",
+            headers={"x-piaule-channel-token": "channel-internal-test-token"},
+            json={"contenu_base64": base64.b64encode(b"%PDF-channel").decode("ascii")},
+        )
+        assert stored.status_code == 200
+        assert stored.json()["statut"] == "stockee"
+        assert stored.json()["piece_id"]
+        documents = owner.get(
+            f"/api/biens/{property_id}/candidatures/{application_id}/pieces"
+        )
+        assert documents.status_code == 200
+        assert documents.json()[0]["provenance"] == "whatsapp"
+
+        conversation_id = received.json()["message"]["conversation_id"]
+        detail = owner.get(f"/api/messages/conversations/{conversation_id}")
+        assert detail.status_code == 200
+        assert len(detail.json()["pieces_jointes"]) == 1
