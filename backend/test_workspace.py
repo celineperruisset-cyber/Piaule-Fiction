@@ -1316,6 +1316,83 @@ def test_candidate_email_outbox_sends_queued_messages(monkeypatch):
         ).json()[0]["statut"] == "envoye"
 
 
+def test_unified_owner_inbox_keeps_email_and_candidate_portal_in_one_conversation():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        owner = TestClient(main.app)
+        assert owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Celine",
+                "email": "inbox-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        ).status_code == 200
+
+        property_id = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien boîte unifiée",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue des messages",
+                "ville": "Lyon",
+            },
+        ).json()["id"]
+        application_id = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Demo",
+                "candidat_email": "alex-inbox@example.test",
+            },
+        ).json()["id"]
+
+        first = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/messages",
+            json={"sujet": "Premier contact", "contenu": "Bonjour Alex."},
+        )
+        assert first.status_code == 201
+        assert first.json()["canal"] == "email"
+
+        access = owner.post(
+            f"/api/biens/{property_id}/candidatures/{application_id}/lien-candidat"
+        )
+        access_token = access.json()["url"].split("?access=", 1)[1]
+        reply = owner.post(
+            f"/api/candidature-acces/{access_token}/messages",
+            json={"sujet": "Re: Premier contact", "contenu": "Merci, je suis disponible."},
+        )
+        assert reply.status_code == 201
+        assert reply.json()["canal"] == "portail_candidat"
+
+        conversations = owner.get("/api/messages/conversations")
+        assert conversations.status_code == 200
+        assert len(conversations.json()) == 1
+        conversation = conversations.json()[0]
+        assert conversation["candidature_id"] == application_id
+        assert conversation["messages_non_lus"] == 1
+        conversation_id = conversation["id"]
+
+        detail = owner.get(f"/api/messages/conversations/{conversation_id}")
+        assert detail.status_code == 200
+        assert len(detail.json()["messages"]) == 2
+
+        marked = owner.post(f"/api/messages/conversations/{conversation_id}/lire")
+        assert marked.status_code == 200
+        assert marked.json()["messages_non_lus"] == 0
+
+        outgoing = owner.post(
+            f"/api/messages/conversations/{conversation_id}",
+            json={"sujet": "Suite", "contenu": "Votre dossier est en cours."},
+        )
+        assert outgoing.status_code == 201
+        assert outgoing.json()["statut"] == "a_envoyer"
+        assert outgoing.json()["conversation_id"] == conversation_id
+
+
 def test_application_status_cycle_records_history_and_blocks_early_visit():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

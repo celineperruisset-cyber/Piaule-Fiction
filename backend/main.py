@@ -1258,6 +1258,10 @@ class OwnerCandidateMessageCreate(BaseModel):
     sujet: str = Field(default="", max_length=160)
 
 
+ConversationChannel = Literal["email", "portail_candidat", "telegram", "whatsapp"]
+ConversationStatus = Literal["ouverte", "en_attente", "fermee"]
+
+
 class CandidateMessage(BaseModel):
     id: str
     candidature_id: str
@@ -1266,7 +1270,37 @@ class CandidateMessage(BaseModel):
     contenu: str
     source: Literal["email", "portail_candidat", "agent", "proprietaire"]
     statut: Literal["recu", "a_envoyer", "en_cours", "envoye", "erreur"]
+    conversation_id: str | None = None
+    canal: ConversationChannel = "email"
+    message_externe_id: str = ""
+    repond_a: str = ""
+    lu_le: str | None = None
     created_at: str
+
+
+class Conversation(BaseModel):
+    id: str
+    workspace_id: str
+    bien_id: str
+    candidature_id: str
+    canal: ConversationChannel
+    statut: ConversationStatus
+    sujet: str
+    dernier_message_le: str | None = None
+    messages_non_lus: int = 0
+    created_at: str
+    updated_at: str
+
+
+class ConversationDetail(BaseModel):
+    conversation: Conversation
+    messages: list[CandidateMessage]
+
+
+class ConversationMessageCreate(BaseModel):
+    contenu: str = Field(min_length=1, max_length=5000)
+    sujet: str = Field(default="", max_length=160)
+    canal: ConversationChannel | None = None
 
 
 class CandidateCompletenessFollowUp(BaseModel):
@@ -1783,17 +1817,43 @@ def _ensure_database() -> None:
                 workspace_id TEXT NOT NULL,
                 application_id TEXT NOT NULL,
                 property_id TEXT NOT NULL,
+                conversation_id TEXT,
                 direction TEXT NOT NULL,
                 sujet TEXT NOT NULL DEFAULT '',
                 contenu TEXT NOT NULL,
                 source TEXT NOT NULL,
                 statut TEXT NOT NULL,
+                channel TEXT NOT NULL DEFAULT 'email',
+                external_message_id TEXT NOT NULL DEFAULT '',
+                in_reply_to TEXT NOT NULL DEFAULT '',
+                from_address TEXT NOT NULL DEFAULT '',
+                to_address TEXT NOT NULL DEFAULT '',
+                read_at TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
                 FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE,
-                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
             );
             CREATE INDEX IF NOT EXISTS candidate_messages_application_idx ON candidate_messages(application_id, created_at);
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                property_id TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'ouverte',
+                subject TEXT NOT NULL DEFAULT '',
+                last_message_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(workspace_id, application_id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS conversations_workspace_idx ON conversations(workspace_id, updated_at);
+            CREATE INDEX IF NOT EXISTS conversations_property_idx ON conversations(property_id, updated_at);
             CREATE TABLE IF NOT EXISTS visit_slots (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -2301,8 +2361,43 @@ def _ensure_database() -> None:
             ("attempts", "INTEGER NOT NULL DEFAULT 0"),
             ("sent_at", "TEXT"),
             ("last_error", "TEXT NOT NULL DEFAULT ''"),
+            ("conversation_id", "TEXT"),
+            ("channel", "TEXT NOT NULL DEFAULT 'email'"),
+            ("external_message_id", "TEXT NOT NULL DEFAULT ''"),
+            ("in_reply_to", "TEXT NOT NULL DEFAULT ''"),
+            ("from_address", "TEXT NOT NULL DEFAULT ''"),
+            ("to_address", "TEXT NOT NULL DEFAULT ''"),
+            ("read_at", "TEXT"),
         ):
             _ensure_column(connection, "candidate_messages", column, definition)
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS candidate_messages_conversation_idx ON candidate_messages(conversation_id, created_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS candidate_messages_external_idx ON candidate_messages(workspace_id, external_message_id)"
+        )
+        # Attach legacy messages to the unified inbox the first time the new schema is used.
+        legacy_messages = connection.execute(
+            """
+            SELECT id, workspace_id, application_id, property_id, channel, sujet
+            FROM candidate_messages
+            WHERE conversation_id IS NULL
+            """
+        ).fetchall()
+        for legacy_message in legacy_messages:
+            conversation = _get_or_create_conversation(
+                connection,
+                workspace_id=legacy_message["workspace_id"],
+                property_id=legacy_message["property_id"],
+                application_id=legacy_message["application_id"],
+                channel=legacy_message["channel"] or "email",
+                subject=legacy_message["sujet"],
+            )
+            connection.execute(
+                "UPDATE candidate_messages SET conversation_id = ? WHERE id = ?",
+                (conversation["id"], legacy_message["id"]),
+            )
+            _touch_conversation(connection, conversation["id"], subject=legacy_message["sujet"])
         _ensure_column(connection, "workspace_agents", "contract_json", "TEXT NOT NULL DEFAULT '{}'")
 
         # Give legacy accounts a workspace before any workspace-scoped route is used.
@@ -4106,6 +4201,105 @@ def _application_verification_request_from_row(row: sqlite3.Row) -> ApplicationV
     )
 
 
+def _conversation_from_row(row: sqlite3.Row, connection: sqlite3.Connection) -> Conversation:
+    unread = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM candidate_messages
+        WHERE conversation_id = ? AND direction = 'entrant' AND read_at IS NULL
+        """,
+        (row["id"],),
+    ).fetchone()["count"]
+    return Conversation(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        bien_id=row["property_id"],
+        candidature_id=row["application_id"],
+        canal=row["channel"],
+        statut=row["status"],
+        sujet=row["subject"],
+        dernier_message_le=row["last_message_at"],
+        messages_non_lus=int(unread),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _get_or_create_conversation(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    property_id: str,
+    application_id: str,
+    channel: str,
+    subject: str = "",
+) -> sqlite3.Row:
+    """Return the canonical thread for one application/channel pair."""
+
+    existing = connection.execute(
+        """
+        SELECT * FROM conversations
+        WHERE workspace_id = ? AND application_id = ?
+        """,
+        (workspace_id, application_id),
+    ).fetchone()
+    if existing is not None:
+        if channel != existing["channel"] or (subject and not existing["subject"]):
+            connection.execute(
+                """
+                UPDATE conversations
+                SET channel = ?,
+                    subject = CASE WHEN subject = '' AND ? <> '' THEN ? ELSE subject END,
+                    updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (channel, _clean_text(subject, 160), _clean_text(subject, 160), existing["id"]),
+            )
+            existing = connection.execute(
+                "SELECT * FROM conversations WHERE id = ?", (existing["id"],)
+            ).fetchone()
+        return existing
+
+    conversation_id = f"conversation-{uuid4().hex[:16]}"
+    connection.execute(
+        """
+        INSERT INTO conversations(
+            id, workspace_id, property_id, application_id, channel,
+            status, subject, last_message_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'ouverte', ?, NULL, datetime('now'), datetime('now'))
+        """,
+        (
+            conversation_id,
+            workspace_id,
+            property_id,
+            application_id,
+            channel,
+            _clean_text(subject, 160),
+        ),
+    )
+    return connection.execute(
+        "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
+    ).fetchone()
+
+
+def _touch_conversation(
+    connection: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    subject: str = "",
+) -> None:
+    connection.execute(
+        """
+        UPDATE conversations
+        SET last_message_at = datetime('now'),
+            subject = CASE WHEN subject = '' AND ? <> '' THEN ? ELSE subject END,
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (_clean_text(subject, 160), _clean_text(subject, 160), conversation_id),
+    )
+
+
 def _candidate_message_from_row(row: sqlite3.Row) -> CandidateMessage:
     return CandidateMessage(
         id=row["id"],
@@ -4115,6 +4309,11 @@ def _candidate_message_from_row(row: sqlite3.Row) -> CandidateMessage:
         contenu=row["contenu"],
         source=row["source"],
         statut=row["statut"],
+        conversation_id=row["conversation_id"],
+        canal=row["channel"],
+        message_externe_id=row["external_message_id"],
+        repond_a=row["in_reply_to"],
+        lu_le=row["read_at"],
         created_at=row["created_at"],
     )
 
@@ -8506,22 +8705,37 @@ def _ingest_inbound_application(
         ):
             stored_count += 1
     if matched_application_id:
+        conversation = _get_or_create_conversation(
+            connection,
+            workspace_id=channel["workspace_id"],
+            property_id=channel["property_id"],
+            application_id=matched_application_id,
+            channel="email",
+            subject=subject,
+        )
+        candidate_message_id = f"message-candidat-{uuid4().hex[:16]}"
         connection.execute(
             """
             INSERT INTO candidate_messages(
-                id, workspace_id, application_id, property_id, direction,
-                sujet, contenu, source, statut, created_at
-            ) VALUES (?, ?, ?, ?, 'entrant', ?, ?, 'email', 'recu', datetime('now'))
+                id, workspace_id, application_id, property_id, conversation_id,
+                direction, sujet, contenu, source, statut, channel,
+                external_message_id, from_address, to_address, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'entrant', ?, ?, 'email', 'recu', 'email', ?, ?, ?, datetime('now'))
             """,
             (
-                f"message-candidat-{uuid4().hex[:16]}",
+                candidate_message_id,
                 channel["workspace_id"],
                 matched_application_id,
                 channel["property_id"],
+                conversation["id"],
                 _clean_text(subject, 160),
                 _clean_text(body, 5_000),
+                cleaned_message_id,
+                sender,
+                reception_address,
             ),
         )
+        _touch_conversation(connection, conversation["id"], subject=subject)
         _promote_inbound_attachments(
             connection,
             workspace_id=channel["workspace_id"],
@@ -8630,6 +8844,7 @@ def process_candidate_email_outbox(request: Request) -> EmailOutboxProcessResult
             FROM candidate_messages m
             JOIN owner_applications a ON a.id = m.application_id
             WHERE m.direction = 'sortant' AND m.statut = 'a_envoyer'
+              AND m.channel = 'email'
               AND a.candidat_email <> ''
             ORDER BY m.created_at, m.id
             LIMIT ?
@@ -9182,22 +9397,32 @@ def candidate_portal_message(
     access = _active_candidate_access_row(token)
     message_id = f"message-candidat-{uuid4().hex[:16]}"
     with closing(_connect()) as connection:
+        conversation = _get_or_create_conversation(
+            connection,
+            workspace_id=access["workspace_id"],
+            property_id=access["property_id"],
+            application_id=access["application_id"],
+            channel="portail_candidat",
+            subject=payload.sujet,
+        )
         connection.execute(
             """
             INSERT INTO candidate_messages(
-                id, workspace_id, application_id, property_id, direction,
-                sujet, contenu, source, statut, created_at
-            ) VALUES (?, ?, ?, ?, 'entrant', ?, ?, 'portail_candidat', 'recu', datetime('now'))
+                id, workspace_id, application_id, property_id, conversation_id,
+                direction, sujet, contenu, source, statut, channel, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'entrant', ?, ?, 'portail_candidat', 'recu', 'portail_candidat', datetime('now'))
             """,
             (
                 message_id,
                 access["workspace_id"],
                 access["application_id"],
                 access["property_id"],
+                conversation["id"],
                 _clean_text(payload.sujet, 160),
                 _clean_text(payload.contenu, 5_000),
             ),
         )
+        _touch_conversation(connection, conversation["id"], subject=payload.sujet)
         connection.commit()
         row = connection.execute("SELECT * FROM candidate_messages WHERE id = ?", (message_id,)).fetchone()
     return _candidate_message_from_row(row)
@@ -9318,6 +9543,160 @@ def _application_for_owner(
     return row
 
 
+@app.get("/api/messages/conversations", response_model=list[Conversation])
+def list_owner_conversations(
+    canal: ConversationChannel | None = None,
+    statut: ConversationStatus | None = None,
+    non_lues: bool = False,
+    limit: int = Query(default=50, ge=1, le=100),
+    owner: Candidate = Depends(current_candidate),
+) -> list[Conversation]:
+    """List every candidate conversation in one owner inbox."""
+
+    clauses = ["c.workspace_id = ?"]
+    parameters: list[object] = [owner.workspace_id]
+    if canal:
+        clauses.append("c.channel = ?")
+        parameters.append(canal)
+    if statut:
+        clauses.append("c.status = ?")
+        parameters.append(statut)
+    if non_lues:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM candidate_messages m WHERE m.conversation_id = c.id AND m.direction = 'entrant' AND m.read_at IS NULL)"
+        )
+    parameters.append(limit)
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT c.*
+            FROM conversations c
+            WHERE {' AND '.join(clauses)}
+            ORDER BY COALESCE(c.last_message_at, c.updated_at) DESC, c.id DESC
+            LIMIT ?
+            """,
+            parameters,
+        ).fetchall()
+        return [_conversation_from_row(row, connection) for row in rows]
+
+
+@app.get("/api/messages/conversations/{conversation_id}", response_model=ConversationDetail)
+def get_owner_conversation(
+    conversation_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> ConversationDetail:
+    """Return one complete candidate conversation for the owner workspace."""
+
+    with closing(_connect()) as connection:
+        conversation = connection.execute(
+            "SELECT * FROM conversations WHERE id = ? AND workspace_id = ?",
+            (conversation_id, owner.workspace_id),
+        ).fetchone()
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation introuvable.")
+        messages = connection.execute(
+            """
+            SELECT * FROM candidate_messages
+            WHERE conversation_id = ? AND workspace_id = ?
+            ORDER BY created_at, id
+            """,
+            (conversation_id, owner.workspace_id),
+        ).fetchall()
+        return ConversationDetail(
+            conversation=_conversation_from_row(conversation, connection),
+            messages=[_candidate_message_from_row(row) for row in messages],
+        )
+
+
+@app.post("/api/messages/conversations/{conversation_id}/lire", response_model=Conversation)
+def mark_owner_conversation_read(
+    conversation_id: str,
+    owner: Candidate = Depends(current_candidate),
+) -> Conversation:
+    """Mark all incoming messages of a conversation as read."""
+
+    with closing(_connect()) as connection:
+        conversation = connection.execute(
+            "SELECT * FROM conversations WHERE id = ? AND workspace_id = ?",
+            (conversation_id, owner.workspace_id),
+        ).fetchone()
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation introuvable.")
+        connection.execute(
+            """
+            UPDATE candidate_messages
+            SET read_at = COALESCE(read_at, datetime('now'))
+            WHERE conversation_id = ? AND workspace_id = ? AND direction = 'entrant'
+            """,
+            (conversation_id, owner.workspace_id),
+        )
+        connection.commit()
+        conversation = connection.execute(
+            "SELECT * FROM conversations WHERE id = ? AND workspace_id = ?",
+            (conversation_id, owner.workspace_id),
+        ).fetchone()
+        return _conversation_from_row(conversation, connection)
+
+
+@app.post("/api/messages/conversations/{conversation_id}", response_model=CandidateMessage, status_code=201)
+def create_conversation_message(
+    conversation_id: str,
+    payload: ConversationMessageCreate,
+    owner: Candidate = Depends(current_candidate),
+) -> CandidateMessage:
+    """Create an owner reply in the unified inbox without sending it yet."""
+
+    message_id = f"message-candidat-{uuid4().hex[:16]}"
+    with closing(_connect()) as connection:
+        conversation = connection.execute(
+            "SELECT * FROM conversations WHERE id = ? AND workspace_id = ?",
+            (conversation_id, owner.workspace_id),
+        ).fetchone()
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation introuvable.")
+        if payload.canal and payload.canal != conversation["channel"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Le canal demandé ne correspond pas au canal actif de cette conversation.",
+            )
+        application = connection.execute(
+            """
+            SELECT * FROM owner_applications
+            WHERE id = ? AND workspace_id = ? AND property_id = ?
+            """,
+            (conversation["application_id"], owner.workspace_id, conversation["property_id"]),
+        ).fetchone()
+        if application is None:
+            raise HTTPException(status_code=409, detail="La candidature liée à cette conversation est introuvable.")
+        connection.execute(
+            """
+            INSERT INTO candidate_messages(
+                id, workspace_id, application_id, property_id, conversation_id,
+                direction, sujet, contenu, source, statut, channel,
+                from_address, to_address, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'sortant', ?, ?, 'proprietaire', 'a_envoyer', ?, ?, ?, datetime('now'))
+            """,
+            (
+                message_id,
+                owner.workspace_id,
+                conversation["application_id"],
+                conversation["property_id"],
+                conversation_id,
+                _clean_text(payload.sujet, 160),
+                _clean_text(payload.contenu, 5_000),
+                conversation["channel"],
+                owner.email,
+                application["candidat_email"],
+            ),
+        )
+        _touch_conversation(connection, conversation_id, subject=payload.sujet)
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM candidate_messages WHERE id = ?", (message_id,)
+        ).fetchone()
+    return _candidate_message_from_row(row)
+
+
 @app.get(
     "/api/biens/{property_id}/candidatures/{application_id}/messages",
     response_model=list[CandidateMessage],
@@ -9356,22 +9735,35 @@ def create_owner_candidate_message(
     message_id = f"message-candidat-{uuid4().hex[:16]}"
     with closing(_connect()) as connection:
         application = _application_for_owner(connection, owner, property_id, application_id)
+        conversation = _get_or_create_conversation(
+            connection,
+            workspace_id=owner.workspace_id,
+            property_id=property_id,
+            application_id=application_id,
+            channel="email",
+            subject=payload.sujet,
+        )
         connection.execute(
             """
             INSERT INTO candidate_messages(
-                id, workspace_id, application_id, property_id, direction,
-                sujet, contenu, source, statut, created_at
-            ) VALUES (?, ?, ?, ?, 'sortant', ?, ?, 'proprietaire', 'a_envoyer', datetime('now'))
+                id, workspace_id, application_id, property_id, conversation_id,
+                direction, sujet, contenu, source, statut, channel,
+                from_address, to_address, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'sortant', ?, ?, 'proprietaire', 'a_envoyer', 'email', ?, ?, datetime('now'))
             """,
             (
                 message_id,
                 owner.workspace_id,
                 application_id,
                 property_id,
+                conversation["id"],
                 _clean_text(payload.sujet, 160),
                 _clean_text(payload.contenu, 5_000),
+                owner.email,
+                application["candidat_email"],
             ),
         )
+        _touch_conversation(connection, conversation["id"], subject=payload.sujet)
         connection.commit()
         row = connection.execute("SELECT * FROM candidate_messages WHERE id = ?", (message_id,)).fetchone()
     return _candidate_message_from_row(row)
@@ -10012,22 +10404,35 @@ def agent_request_missing_documents(
             "Aucun autre document n'est nécessaire à ce stade. Nous vous recontacterons si une vérification "
             "fait apparaître une incohérence."
         )
+        conversation = _get_or_create_conversation(
+            connection,
+            workspace_id=owner.workspace_id,
+            property_id=property_id,
+            application_id=application_id,
+            channel="email",
+            subject="Pièces nécessaires pour votre candidature",
+        )
         connection.execute(
             """
             INSERT INTO candidate_messages(
-                id, workspace_id, application_id, property_id, direction,
-                sujet, contenu, source, statut, created_at
-            ) VALUES (?, ?, ?, ?, 'sortant', ?, ?, 'agent', 'a_envoyer', datetime('now'))
+                id, workspace_id, application_id, property_id, conversation_id,
+                direction, sujet, contenu, source, statut, channel,
+                from_address, to_address, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'sortant', ?, ?, 'agent', 'a_envoyer', 'email', ?, ?, datetime('now'))
             """,
             (
                 message_id,
                 owner.workspace_id,
                 application_id,
                 property_id,
+                conversation["id"],
                 "Pièces nécessaires pour votre candidature",
                 message_body,
+                owner.email,
+                application["candidat_email"],
             ),
         )
+        _touch_conversation(connection, conversation["id"], subject="Pièces nécessaires pour votre candidature")
         followup_id = f"candidate-followup-{uuid4().hex[:16]}"
         connection.execute(
             """
