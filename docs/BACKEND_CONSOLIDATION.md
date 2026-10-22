@@ -11,6 +11,8 @@ Les fichiers restent dans `PIAULE_UPLOAD_DIRECTORY`, hors du répertoire public 
 - `GET /api/biens/{bien}/candidatures/{candidature}/verification-summary` : synthèse explicable pour l'espace propriétaire.
 - Chaque lecture et suppression crée un événement dans `/api/audit`. Le contenu des documents n'est jamais copié dans le journal.
 
+Si ClamAV est installé sur le VPS, le contrôle peut être activé avec `PIAULE_CLAMAV_ENABLED=true`. Sans cette variable et sans le binaire disponible, le backend affiche `non_configure` et ne prétend pas avoir réalisé un antivirus.
+
 La vérification locale distingue désormais clairement :
 
 - contrôle technique : fichier présent, taille, MIME, signature PDF/JPG/PNG, doublon, expiration et cohérence indicative du nom ;
@@ -45,6 +47,9 @@ Le runtime IA n'appelle pas encore un modèle simplement parce qu'une clé est p
 
 - `GET /health` vérifie la disponibilité de la base et du stockage.
 - `GET /api/parametres/production` donne au propriétaire une checklist sans révéler les secrets.
+- `GET /api/parametres/email` indique si SMTP et IMAP sont prêts, sans renvoyer les mots de passe.
+- `GET /api/parametres/agents/queue` indique la pression de la file des missions.
+- `POST /api/internal/maintenance/run` expire les liens et demandes obsolètes, interrompt les missions bloquées et exécute la purge des candidatures arrivées à échéance.
 - `POST /api/internal/maintenance/backup` crée une copie SQLite cohérente dans `PIAULE_BACKUP_DIRECTORY`.
 
 Variables utiles :
@@ -57,6 +62,8 @@ PIAULE_AI_PROVIDER=...
 PIAULE_AI_MODEL=...
 PIAULE_AI_API_KEY=...
 PIAULE_AI_MAX_REQUESTS_PER_DAY=1000
+PIAULE_CLAMAV_ENABLED=false
+PIAULE_CLAMAV_COMMAND=clamscan
 ```
 
 La copie locale n'est pas une stratégie de sauvegarde complète : le VPS doit ensuite transférer les sauvegardes vers un stockage séparé, chiffré et testé en restauration.

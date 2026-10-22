@@ -15,8 +15,11 @@ import json
 import os
 import re
 import secrets
+import shlex
+import shutil
 import sqlite3
 import smtplib
+import subprocess
 import time
 import base64
 import unicodedata
@@ -96,6 +99,8 @@ DATABASE_PATH = Path(
 UPLOAD_DIRECTORY = Path(os.getenv("PIAULE_UPLOAD_DIRECTORY", str(STATE_DIRECTORY / "uploads")))
 BACKUP_DIRECTORY = Path(os.getenv("PIAULE_BACKUP_DIRECTORY", str(STATE_DIRECTORY / "backups")))
 MAX_DOCUMENT_BYTES = 100 * 1024 * 1024
+CLAMAV_ENABLED = os.getenv("PIAULE_CLAMAV_ENABLED", "false").strip().lower() == "true"
+CLAMAV_COMMAND = os.getenv("PIAULE_CLAMAV_COMMAND", "clamscan").strip() or "clamscan"
 ALLOWED_DOCUMENT_TYPES = {
     "pdf": {"application/pdf"},
     "jpg": {"image/jpeg"},
@@ -430,6 +435,16 @@ class AgentRuntimeStatus(BaseModel):
     limite_quotidienne: int
     secret_present: bool
     message: str
+
+
+class AgentQueueStatus(BaseModel):
+    queued: int
+    running: int
+    completed: int
+    failed: int
+    cancelled: int
+    oldest_queued_at: str | None = None
+    missions_a_reprendre: int
 
 
 class ProductionReadiness(BaseModel):
@@ -1576,6 +1591,15 @@ class EmailInboxSyncResult(BaseModel):
     ignores: int
     erreurs: int
     configuration: str
+
+
+class EmailIntegrationStatus(BaseModel):
+    active: bool
+    smtp_configured: bool
+    imap_configured: bool
+    adresse_emetteur: str
+    dossier_imap: str
+    message: str
 
 
 class DossierFacileConnection(BaseModel):
@@ -5119,6 +5143,34 @@ def _document_type_filename_hints(filename: str) -> set[str]:
     }
 
 
+def _clamav_check(path: Path) -> str:
+    """Run an optional local antivirus check without pretending it is active."""
+
+    if not CLAMAV_ENABLED:
+        return "non_configure"
+    command_parts = shlex.split(CLAMAV_COMMAND)
+    if not command_parts:
+        return "non_configure"
+    executable = shutil.which(command_parts[0])
+    if executable is None:
+        return "non_configure"
+    try:
+        result = subprocess.run(
+            [executable, *command_parts[1:], "--no-summary", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "erreur_controle"
+    if result.returncode == 0:
+        return "propre"
+    if result.returncode == 1:
+        return "menace_detectee"
+    return "erreur_controle"
+
+
 def _document_preflight(
     connection: sqlite3.Connection,
     row: sqlite3.Row,
@@ -5191,6 +5243,13 @@ def _document_preflight(
     if duplicate:
         anomalies.append("doublon_dans_le_dossier")
 
+    antivirus = _clamav_check(path) if path.exists() else "non_verifiable"
+    checks["antivirus"] = antivirus
+    if antivirus == "menace_detectee":
+        anomalies.append("menace_antivirus_detectee")
+    elif antivirus == "erreur_controle":
+        anomalies.append("controle_antivirus_en_erreur")
+
     # A local check cannot prove that a file was issued by an administration.
     checks["authenticite"] = "non_verifiable_localement"
     checks["coherence_identite_revenus"] = "non_verifiee_sans_extraction"
@@ -5203,8 +5262,14 @@ def _document_preflight(
         "type_mime_incoherent",
         "signature_fichier_incoherente",
         "date_expiration_invalide",
+        "menace_antivirus_detectee",
     }
-    attention_anomalies = {"document_expire", "doublon_dans_le_dossier", "type_probable_incompatible_avec_le_nom"}
+    attention_anomalies = {
+        "document_expire",
+        "doublon_dans_le_dossier",
+        "type_probable_incompatible_avec_le_nom",
+        "controle_antivirus_en_erreur",
+    }
     if any(item in hard_anomalies for item in anomalies):
         result = "bloque"
         new_status = "a_corriger"
@@ -12959,4 +13024,127 @@ def create_database_backup(request: Request) -> dict[str, object]:
         "taille_octets": backup_path.stat().st_size,
         "stockage": "local_vps",
         "prochaine_etape": "copier périodiquement ce fichier vers un stockage séparé et chiffré",
+    }
+
+
+@app.get("/api/parametres/email", response_model=EmailIntegrationStatus)
+def get_email_integration_status(owner: Candidate = Depends(current_candidate)) -> EmailIntegrationStatus:
+    """Expose e-mail readiness without exposing SMTP/IMAP credentials."""
+
+    _workspace_for_owner(owner)
+    smtp = _smtp_settings()
+    imap = _imap_settings()
+    if smtp and imap:
+        message = "La boîte peut recevoir les candidatures et envoyer les réponses en file d'attente."
+    elif _email_enabled():
+        message = "Le mode e-mail est activé, mais les paramètres SMTP ou IMAP sont incomplets."
+    else:
+        message = "Le connecteur e-mail est préparé mais désactivé."
+    return EmailIntegrationStatus(
+        active=_email_enabled(),
+        smtp_configured=smtp is not None,
+        imap_configured=imap is not None,
+        adresse_emetteur=str(smtp["sender"]) if smtp else "",
+        dossier_imap=str(imap["folder"]) if imap else "INBOX",
+        message=message,
+    )
+
+
+@app.get("/api/parametres/agents/queue", response_model=AgentQueueStatus)
+def get_agent_queue_status(owner: Candidate = Depends(current_candidate)) -> AgentQueueStatus:
+    """Show queue pressure to the owner without exposing other workspaces."""
+
+    _workspace_for_owner(owner)
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            """
+            SELECT status, COUNT(*) AS total
+            FROM agent_runs
+            WHERE workspace_id = ?
+            GROUP BY status
+            """,
+            (owner.workspace_id,),
+        ).fetchall()
+        oldest = connection.execute(
+            """
+            SELECT MIN(created_at) AS oldest FROM agent_runs
+            WHERE workspace_id = ? AND status = 'queued'
+            """,
+            (owner.workspace_id,),
+        ).fetchone()["oldest"]
+        retry_count = connection.execute(
+            """
+            SELECT COUNT(*) AS total FROM agent_runs
+            WHERE workspace_id = ? AND status = 'failed' AND attempts < max_attempts
+            """,
+            (owner.workspace_id,),
+        ).fetchone()["total"]
+    counts = {row["status"]: int(row["total"]) for row in rows}
+    return AgentQueueStatus(
+        queued=counts.get("queued", 0),
+        running=counts.get("running", 0),
+        completed=counts.get("completed", 0),
+        failed=counts.get("failed", 0),
+        cancelled=counts.get("cancelled", 0),
+        oldest_queued_at=oldest,
+        missions_a_reprendre=int(retry_count),
+    )
+
+
+@app.post("/api/internal/maintenance/run")
+def run_backend_maintenance(request: Request, limit: int = 100) -> dict[str, object]:
+    """Run the safe periodic cleanup job used by a VPS scheduler."""
+
+    _agent_internal_auth(request)
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=422, detail="La limite doit être comprise entre 1 et 500.")
+    now = _iso_now()
+    purged: list[str] = []
+    with closing(_connect()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        expired_links = connection.execute(
+            "UPDATE candidate_access_links SET active = 0 WHERE active = 1 AND expires_at <= ?",
+            (time.time(),),
+        ).rowcount
+        expired_verifications = connection.execute(
+            """
+            UPDATE application_verification_requests
+            SET status = 'expiree', result_summary = 'La demande de vérification a expiré.', updated_at = ?
+            WHERE status IN ('en_attente_consentement', 'en_attente_source')
+              AND expires_at IS NOT NULL AND expires_at <= ?
+            """,
+            (now, now),
+        ).rowcount
+        stale_agents = connection.execute(
+            """
+            UPDATE agent_runs
+            SET status = 'failed', error = 'Mission interrompue après expiration de son verrou.',
+                finished_at = ?, updated_at = ?
+            WHERE status = 'running' AND updated_at <= datetime('now', '-30 minutes')
+            """,
+            (now, now),
+        ).rowcount
+        rows = connection.execute(
+            """
+            SELECT a.* FROM owner_applications a
+            WHERE a.purge_after IS NOT NULL AND a.purge_after <= ?
+              AND a.anonymized_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM owner_tenants t
+                  WHERE t.workspace_id = a.workspace_id AND t.application_id = a.id
+              )
+            ORDER BY a.purge_after, a.id LIMIT ?
+            """,
+            (now, limit),
+        ).fetchall()
+        for row in rows:
+            _purge_application_personal_data(connection, row)
+            purged.append(row["id"])
+        connection.commit()
+    return {
+        "ok": True,
+        "liens_expires": int(expired_links),
+        "verifications_expirees": int(expired_verifications),
+        "missions_interrompues": int(stale_agents),
+        "candidatures_purgees": purged,
     }

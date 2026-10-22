@@ -2736,3 +2736,53 @@ def test_agent_retry_runtime_status_and_database_backup_are_available_without_ex
         assert backup.status_code == 200
         assert backup.json()["taille_octets"] > 0
         assert len(list(main.BACKUP_DIRECTORY.glob("*.sqlite3"))) == 1
+
+
+def test_email_status_queue_and_periodic_maintenance_are_exposed_without_credentials():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.AGENT_INTERNAL_TOKEN = "maintenance-test-token"
+        owner = TestClient(main.app)
+        created = owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner Maintenance",
+                "email": "maintenance-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        )
+        assert created.status_code == 200
+
+        email_status = owner.get("/api/parametres/email")
+        assert email_status.status_code == 200
+        assert email_status.json()["smtp_configured"] is False
+        assert email_status.json()["imap_configured"] is False
+        queue = owner.get("/api/parametres/agents/queue")
+        assert queue.status_code == 200
+        assert queue.json()["queued"] == 0
+
+        run = owner.post(
+            "/api/internal/agent-runs",
+            headers={"x-piaule-agent-token": "maintenance-test-token"},
+            json={
+                "workspace_id": created.json()["workspace_id"],
+                "type_agent": "agent-suivi",
+                "mission": "Mission à nettoyer.",
+            },
+        )
+        assert run.status_code == 201
+        with main._connect() as connection:
+            connection.execute(
+                "UPDATE agent_runs SET status = 'running', updated_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+                (run.json()["id"],),
+            )
+            connection.commit()
+        maintenance = owner.post(
+            "/api/internal/maintenance/run",
+            headers={"x-piaule-agent-token": "maintenance-test-token"},
+        )
+        assert maintenance.status_code == 200
+        assert maintenance.json()["missions_interrompues"] == 1
