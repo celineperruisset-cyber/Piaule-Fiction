@@ -1456,6 +1456,82 @@ def test_owner_automation_policy_controls_agent_completeness_delivery():
         assert message["statut"] == "a_valider"
 
 
+def test_inbound_email_prefers_reply_to_and_keeps_thread_headers():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        main.DATABASE_PATH = root / "test.sqlite3"
+        main.UPLOAD_DIRECTORY = root / "uploads"
+        main.CANDIDATE_PORTAL_BASE_URL = "https://piaulefiction.fr/candidature.html"
+        owner = TestClient(main.app)
+        assert owner.post(
+            "/api/compte",
+            json={
+                "action": "creer",
+                "prenom": "Owner",
+                "email": "headers-owner@example.test",
+                "mdp": "correct horse battery staple",
+            },
+        ).status_code == 200
+        property_id = owner.post(
+            "/api/biens",
+            json={
+                "nom": "Bien en-têtes",
+                "type": "appartement",
+                "adresse_ligne1": "1 rue Reply-To",
+                "ville": "Lyon",
+            },
+        ).json()["id"]
+        channel = owner.post(
+            f"/api/biens/{property_id}/canaux-candidatures",
+            json={"canal": "leboncoin", "libelle": "Annonce principale"},
+        )
+        reception_address = channel.json()["adresse_reception"]
+        application = owner.post(
+            f"/api/biens/{property_id}/candidatures",
+            json={
+                "candidat_prenom": "Alex",
+                "candidat_nom": "Reply",
+                "candidat_email": "alex-real@example.test",
+            },
+        )
+        assert application.status_code == 201
+
+        os.environ["PIAULE_INBOUND_WEBHOOK_TOKEN"] = "headers-token"
+        try:
+            inbound = owner.post(
+                "/api/internal/candidatures/inbound",
+                headers={"x-piaule-inbound-token": "headers-token"},
+                json={
+                    "adresse_reception": reception_address,
+                    "message_id": "imap:INBOX:42:<lbc-42@example.test>",
+                    "expediteur_email": "noreply@leboncoin.fr",
+                    "reply_to": "Alex Real <alex-real@example.test>",
+                    "in_reply_to": "<lbc-root@example.test>",
+                    "references": "<lbc-root@example.test> <lbc-previous@example.test>",
+                    "objet": "Re: Visite du logement",
+                    "contenu_texte": "Bonjour, je suis disponible demain.",
+                },
+            )
+        finally:
+            os.environ.pop("PIAULE_INBOUND_WEBHOOK_TOKEN", None)
+
+        assert inbound.status_code == 200
+        assert inbound.json()["expediteur_email"] == "alex-real@example.test"
+        assert inbound.json()["reply_to"] == "alex-real@example.test"
+        assert inbound.json()["in_reply_to"] == "<lbc-root@example.test>"
+        assert inbound.json()["references"].startswith("<lbc-root@example.test>")
+        assert inbound.json()["statut"] == "associee"
+
+        conversations = owner.get("/api/messages/conversations")
+        assert conversations.status_code == 200
+        assert len(conversations.json()) == 1
+        messages = owner.get(
+            f"/api/messages/conversations/{conversations.json()[0]['id']}"
+        ).json()["messages"]
+        assert messages[0]["message_externe_id"] == "imap:INBOX:42:<lbc-42@example.test>"
+        assert messages[0]["repond_a"] == "<lbc-root@example.test>"
+
+
 def test_application_status_cycle_records_history_and_blocks_early_visit():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

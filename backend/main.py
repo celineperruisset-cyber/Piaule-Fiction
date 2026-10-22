@@ -1087,6 +1087,9 @@ class InboundApplicationEmail(BaseModel):
     objet: str = Field(default="", max_length=500)
     contenu_texte: str = Field(default="", max_length=100_000)
     pieces_jointes: list[str] = Field(default_factory=list)
+    reply_to: str = Field(default="", max_length=254)
+    in_reply_to: str = Field(default="", max_length=500)
+    references: str = Field(default="", max_length=2000)
     recu_le: str | None = None
 
 
@@ -1102,6 +1105,9 @@ class InboundApplicationMessage(BaseModel):
     objet: str
     contenu_texte: str
     pieces_jointes: list[str]
+    reply_to: str = ""
+    in_reply_to: str = ""
+    references: str = ""
     statut: Literal["recue", "en_analyse", "associee", "a_verifier", "rejetee"]
     candidature_id: str | None = None
     recu_le: str
@@ -1713,6 +1719,9 @@ def _ensure_database() -> None:
                 adresse_reception TEXT NOT NULL,
                 message_id TEXT NOT NULL,
                 expediteur_email TEXT NOT NULL DEFAULT '',
+                reply_to TEXT NOT NULL DEFAULT '',
+                in_reply_to TEXT NOT NULL DEFAULT '',
+                references_header TEXT NOT NULL DEFAULT '',
                 objet TEXT NOT NULL DEFAULT '',
                 contenu_texte TEXT NOT NULL DEFAULT '',
                 pieces_jointes_json TEXT NOT NULL DEFAULT '[]',
@@ -2389,6 +2398,12 @@ def _ensure_database() -> None:
             ("anonymized_at", "TEXT"),
         ):
             _ensure_column(connection, "owner_applications", column, definition)
+        for column, definition in (
+            ("reply_to", "TEXT NOT NULL DEFAULT ''"),
+            ("in_reply_to", "TEXT NOT NULL DEFAULT ''"),
+            ("references_header", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            _ensure_column(connection, "inbound_application_messages", column, definition)
         for column, definition in (
             ("attempts", "INTEGER NOT NULL DEFAULT 0"),
             ("sent_at", "TEXT"),
@@ -4050,6 +4065,9 @@ def _inbound_message_from_row(row: sqlite3.Row) -> InboundApplicationMessage:
         adresse_reception=row["adresse_reception"],
         message_id=row["message_id"],
         expediteur_email=row["expediteur_email"],
+        reply_to=row["reply_to"],
+        in_reply_to=row["in_reply_to"],
+        references=row["references_header"],
         objet=row["objet"],
         contenu_texte=row["contenu_texte"],
         pieces_jointes=json.loads(row["pieces_jointes_json"] or "[]"),
@@ -5120,6 +5138,14 @@ def _decode_email_header(value: str | None) -> str:
         return str(make_header(decode_header(value)))
     except (TypeError, ValueError):
         return value
+
+
+def _extract_header_email(value: str | None) -> str:
+    """Extract and normalize one address from a mail header."""
+
+    candidate = parseaddr(value or "")[1]
+    normalized = _normalise_email(candidate) if candidate else ""
+    return normalized if normalized and EMAIL_RE.fullmatch(normalized) else ""
 
 
 def _html_to_text(value: str) -> str:
@@ -8719,13 +8745,18 @@ def _ingest_inbound_application(
     body: str,
     attachment_names: list[str],
     attachment_payloads: list[tuple[str, str, bytes]] | None = None,
+    reply_to: str = "",
+    in_reply_to: str = "",
+    references: str = "",
     received_at: str | None = None,
 ) -> tuple[sqlite3.Row, bool, int]:
     reception_address = _normalise_email(reception_address)
-    sender = _normalise_email(sender) if sender else ""
-    if sender and not EMAIL_RE.fullmatch(sender):
-        sender = ""
+    sender = _extract_header_email(sender)
+    reply_to = _extract_header_email(reply_to)
+    effective_sender = reply_to or sender
     cleaned_message_id = _clean_text(message_id, 300)
+    cleaned_in_reply_to = _clean_text(in_reply_to, 500)
+    cleaned_references = _clean_text(references, 2_000)
     attachments = _clean_string_list(attachment_names, maximum_items=50, maximum_length=240)
     with_payload_names = [item[0] for item in (attachment_payloads or [])]
     attachments = _clean_string_list(attachments + with_payload_names, maximum_items=50, maximum_length=240)
@@ -8749,7 +8780,7 @@ def _ingest_inbound_application(
         (
             channel["workspace_id"],
             channel["property_id"],
-            sender,
+            effective_sender,
             channel["lot_id"],
             channel["lot_id"],
         ),
@@ -8770,9 +8801,10 @@ def _ingest_inbound_application(
         """
         INSERT INTO inbound_application_messages(
             id, workspace_id, channel_id, property_id, lot_id, adresse_reception,
-            message_id, expediteur_email, objet, contenu_texte, pieces_jointes_json,
-            statut, application_id, recu_le, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
+            message_id, expediteur_email, reply_to, in_reply_to, references_header,
+            objet, contenu_texte, pieces_jointes_json, statut, application_id,
+            recu_le, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
         """,
         (
             inbound_id,
@@ -8782,7 +8814,10 @@ def _ingest_inbound_application(
             channel["lot_id"],
             channel["adresse_reception"],
             cleaned_message_id,
-            sender,
+            effective_sender,
+            reply_to,
+            cleaned_in_reply_to,
+            cleaned_references,
             _clean_text(subject, 500),
             _clean_text(body, 100_000),
             json.dumps(attachments, ensure_ascii=False),
@@ -8817,8 +8852,8 @@ def _ingest_inbound_application(
             INSERT INTO candidate_messages(
                 id, workspace_id, application_id, property_id, conversation_id,
                 direction, sujet, contenu, source, statut, channel,
-                external_message_id, from_address, to_address, created_at
-            ) VALUES (?, ?, ?, ?, ?, 'entrant', ?, ?, 'email', 'recu', 'email', ?, ?, ?, datetime('now'))
+                external_message_id, in_reply_to, from_address, to_address, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'entrant', ?, ?, 'email', 'recu', 'email', ?, ?, ?, ?, datetime('now'))
             """,
             (
                 candidate_message_id,
@@ -8829,7 +8864,8 @@ def _ingest_inbound_application(
                 _clean_text(subject, 160),
                 _clean_text(body, 5_000),
                 cleaned_message_id,
-                sender,
+                cleaned_in_reply_to,
+                effective_sender,
                 reception_address,
             ),
         )
@@ -8870,6 +8906,9 @@ def ingest_inbound_application_email(
             subject=payload.objet,
             body=payload.contenu_texte,
             attachment_names=payload.pieces_jointes,
+            reply_to=payload.reply_to,
+            in_reply_to=payload.in_reply_to,
+            references=payload.references,
             received_at=payload.recu_le,
         )
         connection.commit()
@@ -8905,6 +8944,46 @@ def associate_inbound_application(
             "UPDATE inbound_application_messages SET application_id = ?, statut = 'associee' WHERE id = ? AND workspace_id = ?",
             (payload.candidature_id, message_id, owner.workspace_id),
         )
+        existing_candidate_message = connection.execute(
+            """
+            SELECT id FROM candidate_messages
+            WHERE workspace_id = ? AND external_message_id = ?
+            LIMIT 1
+            """,
+            (owner.workspace_id, message["message_id"]),
+        ).fetchone()
+        if existing_candidate_message is None:
+            conversation = _get_or_create_conversation(
+                connection,
+                workspace_id=owner.workspace_id,
+                property_id=message["property_id"],
+                application_id=payload.candidature_id,
+                channel="email",
+                subject=message["objet"],
+            )
+            connection.execute(
+                """
+                INSERT INTO candidate_messages(
+                    id, workspace_id, application_id, property_id, conversation_id,
+                    direction, sujet, contenu, source, statut, channel,
+                    external_message_id, in_reply_to, from_address, to_address, created_at
+                ) VALUES (?, ?, ?, ?, ?, 'entrant', ?, ?, 'email', 'recu', 'email', ?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    f"message-candidat-{uuid4().hex[:16]}",
+                    owner.workspace_id,
+                    payload.candidature_id,
+                    message["property_id"],
+                    conversation["id"],
+                    message["objet"],
+                    message["contenu_texte"],
+                    message["message_id"],
+                    message["in_reply_to"],
+                    message["reply_to"] or message["expediteur_email"],
+                    message["adresse_reception"],
+                ),
+            )
+            _touch_conversation(connection, conversation["id"], subject=message["objet"])
         _promote_inbound_attachments(
             connection,
             workspace_id=owner.workspace_id,
@@ -9078,6 +9157,9 @@ def synchronize_candidate_email_inbox(request: Request) -> EmailInboxSyncResult:
                         reception_address=reception_address,
                         message_id=message_id,
                         sender=parseaddr(message.get("From", ""))[1],
+                        reply_to=message.get("Reply-To", ""),
+                        in_reply_to=_decode_email_header(message.get("In-Reply-To")),
+                        references=_decode_email_header(message.get("References")),
                         subject=_decode_email_header(message.get("Subject")),
                         body=body,
                         attachment_names=[filename for filename, _, _ in attachments],
