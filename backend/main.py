@@ -1276,6 +1276,26 @@ class CandidatePortalView(BaseModel):
     statut_candidature: ApplicationStatus
     completude: ApplicationCompleteness
     verifications: list[ApplicationVerificationRequest] = Field(default_factory=list)
+    canaux_disponibles: list[str] = Field(
+        default_factory=lambda: ["portail_candidat", "whatsapp", "telegram"]
+    )
+    canal_selectionne: str | None = None
+    statut_canal: str = "portail_actif"
+
+
+CandidateChannel = Literal["portail_candidat", "whatsapp", "telegram"]
+
+
+class CandidateChannelSelectionRequest(BaseModel):
+    canal: CandidateChannel
+
+
+class CandidateChannelSelection(BaseModel):
+    candidature_id: str
+    canal: CandidateChannel
+    statut: Literal["actif", "a_configurer"]
+    message: str
+    updated_at: str
 
 
 class CandidateMessageCreate(BaseModel):
@@ -1929,6 +1949,19 @@ def _ensure_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS external_reply_drafts_workspace_idx
                 ON external_reply_drafts(workspace_id, updated_at);
+            CREATE TABLE IF NOT EXISTS candidate_channel_preferences (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                application_id TEXT NOT NULL UNIQUE,
+                channel TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'a_configurer',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(application_id) REFERENCES owner_applications(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS candidate_channel_preferences_workspace_idx
+                ON candidate_channel_preferences(workspace_id, updated_at);
             CREATE TABLE IF NOT EXISTS workspace_automation_policies (
                 workspace_id TEXT PRIMARY KEY,
                 completeness_mode TEXT NOT NULL DEFAULT 'automatique',
@@ -9738,6 +9771,13 @@ def candidate_portal_view(token: str) -> CandidatePortalView:
             """,
             (access["workspace_id"], access["application_id"]),
         ).fetchall()
+        channel_preference = connection.execute(
+            """
+            SELECT channel, status FROM candidate_channel_preferences
+            WHERE workspace_id = ? AND application_id = ?
+            """,
+            (access["workspace_id"], access["application_id"]),
+        ).fetchone()
     return CandidatePortalView(
         candidature_id=access["application_id"],
         candidat_prenom=access["candidat_prenom"],
@@ -9745,6 +9785,82 @@ def candidate_portal_view(token: str) -> CandidatePortalView:
         statut_candidature=access["candidature_statut"],
         completude=completeness,
         verifications=[_application_verification_request_from_row(row) for row in verification_rows],
+        canal_selectionne=channel_preference["channel"] if channel_preference else None,
+        statut_canal=channel_preference["status"] if channel_preference else "portail_actif",
+    )
+
+
+@app.post(
+    "/api/candidature-acces/{token}/canal",
+    response_model=CandidateChannelSelection,
+)
+def candidate_portal_choose_channel(
+    token: str,
+    payload: CandidateChannelSelectionRequest,
+) -> CandidateChannelSelection:
+    """Record the candidate's preferred conversation channel."""
+
+    access = _active_candidate_access_row(token)
+    channel_status = "actif" if payload.canal == "portail_candidat" else "a_configurer"
+    channel_message = (
+        "Les échanges continueront dans Piaule Fiction."
+        if payload.canal == "portail_candidat"
+        else "Ce canal est enregistré. Il sera activé dès que le connecteur Piaule sera configuré."
+    )
+    now = _iso_now()
+    with closing(_connect()) as connection:
+        conversation = _get_or_create_conversation(
+            connection,
+            workspace_id=access["workspace_id"],
+            property_id=access["property_id"],
+            application_id=access["application_id"],
+            channel=payload.canal,
+            subject="Conversation candidat",
+        )
+        preference = connection.execute(
+            "SELECT id FROM candidate_channel_preferences WHERE application_id = ?",
+            (access["application_id"],),
+        ).fetchone()
+        preference_id = preference["id"] if preference else f"channel-preference-{uuid4().hex[:16]}"
+        connection.execute(
+            """
+            INSERT INTO candidate_channel_preferences(
+                id, workspace_id, application_id, channel, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(application_id) DO UPDATE SET
+                channel = excluded.channel,
+                status = excluded.status,
+                updated_at = excluded.updated_at
+            """,
+            (
+                preference_id,
+                access["workspace_id"],
+                access["application_id"],
+                payload.canal,
+                channel_status,
+                now,
+                now,
+            ),
+        )
+        _record_audit_event(
+            connection,
+            workspace_id=access["workspace_id"],
+            actor_type="candidat",
+            actor_id=access["application_id"],
+            event_name="canal_conversation_selectionne",
+            entity_type="conversation",
+            entity_id=conversation["id"],
+            property_id=access["property_id"],
+            application_id=access["application_id"],
+            metadata={"canal": payload.canal, "statut": channel_status},
+        )
+        connection.commit()
+    return CandidateChannelSelection(
+        candidature_id=access["application_id"],
+        canal=payload.canal,
+        statut=channel_status,
+        message=channel_message,
+        updated_at=now,
     )
 
 

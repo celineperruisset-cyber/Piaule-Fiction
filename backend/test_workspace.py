@@ -1361,6 +1361,26 @@ def test_unified_owner_inbox_keeps_email_and_candidate_portal_in_one_conversatio
             f"/api/biens/{property_id}/candidatures/{application_id}/lien-candidat"
         )
         access_token = access.json()["url"].split("?access=", 1)[1]
+        portal_before_channel = owner.get(f"/api/candidature-acces/{access_token}")
+        assert portal_before_channel.status_code == 200
+        assert set(portal_before_channel.json()["canaux_disponibles"]) == {
+            "portail_candidat",
+            "whatsapp",
+            "telegram",
+        }
+        whatsapp_choice = owner.post(
+            f"/api/candidature-acces/{access_token}/canal",
+            json={"canal": "whatsapp"},
+        )
+        assert whatsapp_choice.status_code == 200
+        assert whatsapp_choice.json()["statut"] == "a_configurer"
+        assert owner.get(f"/api/candidature-acces/{access_token}").json()["canal_selectionne"] == "whatsapp"
+        portal_choice = owner.post(
+            f"/api/candidature-acces/{access_token}/canal",
+            json={"canal": "portail_candidat"},
+        )
+        assert portal_choice.status_code == 200
+        assert portal_choice.json()["statut"] == "actif"
         reply = owner.post(
             f"/api/candidature-acces/{access_token}/messages",
             json={"sujet": "Re: Premier contact", "contenu": "Merci, je suis disponible."},
